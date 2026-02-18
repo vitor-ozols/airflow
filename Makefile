@@ -25,3 +25,6 @@ ps:
 
 clean:
 	$(COMPOSE) down -v --remove-orphans
+
+pass:
+	$(COMPOSE) exec airflow-api-server cat /opt/airflow/simple_auth_manager_passwords.json.generated
