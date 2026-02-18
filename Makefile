@@ -10,7 +10,7 @@ init: prepare
 	$(COMPOSE) run --rm airflow-init
 
 up: init
-	$(COMPOSE) up -d airflow-webserver airflow-scheduler
+	$(COMPOSE) up -d airflow-api-server airflow-scheduler airflow-dag-processor
 
 down:
 	$(COMPOSE) down
@@ -18,7 +18,7 @@ down:
 restart: down up
 
 logs:
-	$(COMPOSE) logs -f airflow-webserver airflow-scheduler
+	$(COMPOSE) logs -f airflow-api-server airflow-scheduler airflow-dag-processor
 
 ps:
 	$(COMPOSE) ps

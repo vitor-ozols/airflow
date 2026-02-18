@@ -45,3 +45,8 @@ Depois reconstrua a imagem:
 docker compose build --no-cache
 make up
 ```
+
+Pegar senha do webserver:
+```
+docker compose exec airflow-api-server cat /opt/airflow/simple_auth_manager_passwords.json.generated
+```

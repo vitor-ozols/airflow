@@ -1,4 +1,4 @@
-FROM apache/airflow:2.10.5-python3.11
+FROM apache/airflow:3.1.7-python3.11
 
 USER airflow
 COPY pyproject.toml /opt/airflow/pyproject.toml
