@@ -1,0 +1,13 @@
+[tool.poetry]
+name = "airflow-docker-project"
+version = "0.1.0"
+description = "Projeto Airflow com Docker e Poetry"
+authors = ["ozolsvoz <dev@example.com>"]
+package-mode = false
+
+[tool.poetry.dependencies]
+python = ">=3.11,<3.12"
+
+[build-system]
+requires = ["poetry-core>=1.9.0"]
+build-backend = "poetry.core.masonry.api"
