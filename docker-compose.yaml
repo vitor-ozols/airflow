@@ -5,7 +5,13 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
     AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: "admin:admin"
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: "http://airflow-api-server:8080/execution/"
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET}
+    PYTHONPATH: /opt/airflow/plugins
+    MONGO_DB_USER: ${MONGO_DB_USER}
+    MONGO_DB_PASS: ${MONGO_DB_PASS}
   volumes:
     - ./dags:/opt/airflow/dags
     - ./logs:/opt/airflow/logs
@@ -38,6 +44,14 @@ services:
       - -c
       - |
         airflow db migrate
+        python3 -c "from sqlalchemy import create_engine, text; import os; engine = create_engine(os.environ['AIRFLOW__DATABASE__SQL_ALCHEMY_CONN']); conn = engine.connect(); conn.execute(text(\"DELETE FROM connection WHERE conn_id = 'mongo_vitor_ozols'\")); conn.commit(); conn.close()"
+        airflow connections add "mongo_vitor_ozols" \
+          --conn-type "mongo" \
+          --conn-host "vitor-ozols.jnzjp8i.mongodb.net" \
+          --conn-login "${MONGO_DB_USER}" \
+          --conn-password "${MONGO_DB_PASS}" \
+          --conn-schema "airflow" \
+          --conn-extra '{"srv": true, "tls": true, "authSource": "admin", "retryWrites": true, "w": "majority", "appname": "airflow"}'
 
   airflow-api-server:
     <<: *airflow-common
