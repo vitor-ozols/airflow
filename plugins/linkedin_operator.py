@@ -177,6 +177,55 @@ class LinkedInToMongoOperator(BaseOperator):
                 raise
 
         self.log.info("LinkedIn scraping finalizado | keyword=%s | total_vagas=%s", self.keyword, len(all_jobs))
+        if not all_jobs:
+            self.log.info("Nenhuma vaga coletada para inserir no MongoDB.")
+            return {"inserted": 0, "updated": 0, "matched": 0, "total_scraped": 0}
+
+        try:
+            collection = hook.get_collection(self.mongo_collection, self.mongo_db)
+            operations = [
+                UpdateOne(
+                    {"url": job["url"]},
+                    {
+                        "$set": job,
+                        "$setOnInsert": {
+                            "processed": False,
+                            "processed_at": None,
+                        },
+                    },
+                    upsert=True,
+                )
+                for job in all_jobs
+            ]
+
+            self.log.info(
+                "Mongo insert start | keyword=%s | collection=%s | operations=%s",
+                self.keyword,
+                self.mongo_collection,
+                len(operations),
+            )
+            result = collection.bulk_write(operations, ordered=False)
+            self.log.info(
+                "Mongo insert result | keyword=%s | upserted=%s | modified=%s | matched=%s",
+                self.keyword,
+                result.upserted_count,
+                result.modified_count,
+                result.matched_count,
+            )
+
+            return {
+                "inserted": result.upserted_count,
+                "updated": result.modified_count,
+                "matched": result.matched_count,
+                "total_scraped": len(all_jobs),
+            }
+        except Exception:
+            self.log.exception(
+                "Erro ao salvar vagas no MongoDB | keyword=%s | total_vagas=%s",
+                self.keyword,
+                len(all_jobs),
+            )
+            raise
 
 
 class LinkedInFetchUnprocessedOperator(BaseOperator):
@@ -279,36 +328,3 @@ class LinkedInMarkProcessedOperator(BaseOperator):
 
         self.log.info("Atualizados %s registros como processed=true.", result.modified_count)
         return result.modified_count
-
-        # --- NOVA LÓGICA DE INSERÇÃO (UPSERT) ---
-        if all_jobs:
-            try:
-                # Pegamos a coleção nativa do PyMongo através do hook
-                collection = hook.get_collection(self.mongo_collection, self.mongo_db)
-                
-                # Montamos as operações: Atualiza se existir, Insere se não existir
-                operations = [
-                    UpdateOne(
-                        {"url": job["url"]},  # Chave de busca
-                        {
-                            "$set": job,                      # Atualiza campos em registros existentes
-                            "$setOnInsert": {
-                                "processed": False,
-                                "processed_at": None,
-                            },  # Define apenas na primeira inserção
-                        },
-                        upsert=True           # Permite criar um novo se não achar
-                    )
-                    for job in all_jobs
-                ]
-                
-                # Executa tudo de uma vez
-                if operations:
-                    result = collection.bulk_write(operations)
-                    self.log.info(
-                        f"Sucesso! {result.upserted_count} novas vagas inseridas e "
-                        f"{result.modified_count} vagas atualizadas no banco de dados."
-                    )
-            except Exception as e:
-                self.log.error(f"Erro ao salvar no MongoDB: {e}")
-                raise
