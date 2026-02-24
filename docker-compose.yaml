@@ -1,6 +1,8 @@
 x-airflow-common: &airflow-common
   build: .
   user: "${AIRFLOW_UID:-50000}:0"
+  env_file:
+    - .env
   environment:
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
@@ -12,6 +14,8 @@ x-airflow-common: &airflow-common
     PYTHONPATH: /opt/airflow/plugins
     MONGO_DB_USER: ${MONGO_DB_USER}
     MONGO_DB_PASS: ${MONGO_DB_PASS}
+    GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+    PYDANTIC_AI_MODEL: ${PYDANTIC_AI_MODEL}
   volumes:
     - ./dags:/opt/airflow/dags
     - ./logs:/opt/airflow/logs

@@ -2,7 +2,7 @@ from airflow import DAG
 from datetime import datetime
 from linkedin_operator import LinkedInToMongoOperator
 
-KEYWORDS = ['Airflow', 'Python', 'Data Engineering']
+KEYWORDS = ['Airflow', 'Python', 'Data Engineering', 'RPA', 'Scraping']
 
 BLACKLIST_COMPANIES = [
     'Fruition Group Ireland', 
@@ -10,16 +10,19 @@ BLACKLIST_COMPANIES = [
 ]
 
 with DAG(
-    'linkedin_to_mongo',
+    'linkedin_scraping_and_ia_analysis',
     start_date=datetime(2024, 1, 1),
     schedule='@daily',
-    catchup=False
+    catchup=False,
+    max_active_tasks=1,
+    tags=['linkedin', 'scraping', 'ia_analysis']
     ) as dag:
 
+    previous_task = None
     for kw in KEYWORDS:
-        task_id = f'scrape_{kw.lower().replace(" ", "_")}'
+        task_id = f'scrape_linkedin_task_{kw.lower().replace(" ", "_")}'
         
-        LinkedInToMongoOperator(
+        current_task = LinkedInToMongoOperator(
             task_id=task_id,
             keyword=kw,
             location="Dublin, Ireland",
@@ -30,3 +33,7 @@ with DAG(
             mongo_db='airflow',
             mongo_collection='linkedin_jobs'
         )
+
+        if previous_task:
+            previous_task >> current_task
+        previous_task = current_task

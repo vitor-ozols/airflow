@@ -1,6 +1,7 @@
 COMPOSE := docker compose
+AIRFLOW_SERVICES ?= airflow-api-server airflow-scheduler airflow-dag-processor
 
-.PHONY: prepare init up down restart logs ps clean
+.PHONY: prepare init up down restart restart-airflow logs ps clean
 
 prepare:
 	mkdir -p dags logs plugins
@@ -10,15 +11,17 @@ init: prepare
 	$(COMPOSE) run --rm airflow-init
 
 up: init
-	$(COMPOSE) up -d airflow-api-server airflow-scheduler airflow-dag-processor
+	$(COMPOSE) up -d $(AIRFLOW_SERVICES)
 
 down:
 	$(COMPOSE) down
 
 restart: down up
+restart-airflow:
+	$(COMPOSE) restart $(AIRFLOW_SERVICES)
 
 logs:
-	$(COMPOSE) logs -f airflow-api-server airflow-scheduler airflow-dag-processor
+	$(COMPOSE) logs -f $(AIRFLOW_SERVICES)
 
 ps:
 	$(COMPOSE) ps

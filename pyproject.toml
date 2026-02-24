@@ -9,6 +9,7 @@ package-mode = false
 python = ">=3.11,<3.12"
 scrapy = "^2.14.1"
 apache-airflow-providers-mongo = "^5.3.2"
+pydantic-ai = "^1.63.0"
 
 [build-system]
 requires = ["poetry-core>=1.9.0"]

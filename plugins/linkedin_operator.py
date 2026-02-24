@@ -4,7 +4,8 @@ import json
 import requests
 from datetime import datetime, timedelta
 from scrapy.selector import Selector
-from pymongo import UpdateOne # <-- Importação adicionada para a operação de Upsert
+from pymongo import UpdateOne
+from bson import ObjectId
 
 from airflow.models import BaseOperator
 from airflow.providers.mongo.hooks.mongo import MongoHook
@@ -142,7 +143,109 @@ class LinkedInToMongoOperator(BaseOperator):
                     self.keyword,
                     start,
                 )
-                break
+                raise
+
+
+class LinkedInFetchUnprocessedOperator(BaseOperator):
+    def __init__(
+        self,
+        mongo_conn_id,
+        mongo_db,
+        mongo_collection,
+        limit=50,
+        **kwargs
+    ):
+        super().__init__(**kwargs)
+        self.mongo_conn_id = mongo_conn_id
+        self.mongo_db = mongo_db
+        self.mongo_collection = mongo_collection
+        self.limit = limit
+
+    def execute(self, context):
+        hook = MongoHook(mongo_conn_id=self.mongo_conn_id)
+        collection = hook.get_collection(self.mongo_collection, self.mongo_db)
+
+        cursor = collection.find({"processed": False}).limit(int(self.limit))
+        docs = []
+        for doc in cursor:
+            if "_id" in doc:
+                doc["_id"] = str(doc["_id"])
+            docs.append(doc)
+
+        self.log.info("Encontrados %s registros com processed=false.", len(docs))
+        return docs
+
+
+class LinkedInMarkProcessedOperator(BaseOperator):
+    template_fields = ("ids",)
+
+    def __init__(
+        self,
+        mongo_conn_id,
+        mongo_db,
+        mongo_collection,
+        ids=None,
+        **kwargs
+    ):
+        super().__init__(**kwargs)
+        self.mongo_conn_id = mongo_conn_id
+        self.mongo_db = mongo_db
+        self.mongo_collection = mongo_collection
+        self.ids = ids or []
+
+    def _coerce_ids(self, ids):
+        if ids is None:
+            return []
+
+        if isinstance(ids, list) and ids and isinstance(ids[0], dict):
+            extracted = []
+            for item in ids:
+                if "_id" in item:
+                    extracted.append(item["_id"])
+            ids = extracted
+
+        if isinstance(ids, str):
+            try:
+                ids = json.loads(ids)
+            except json.JSONDecodeError:
+                ids = [ids]
+
+        if isinstance(ids, (set, tuple)):
+            ids = list(ids)
+
+        if not isinstance(ids, list):
+            ids = [ids]
+
+        coerced = []
+        for item in ids:
+            if isinstance(item, ObjectId):
+                coerced.append(item)
+                continue
+            if isinstance(item, str):
+                try:
+                    coerced.append(ObjectId(item))
+                except Exception:
+                    coerced.append(item)
+            else:
+                coerced.append(item)
+        return coerced
+
+    def execute(self, context):
+        ids = self._coerce_ids(self.ids)
+        if not ids:
+            self.log.info("Nenhum id recebido para marcar como processed.")
+            return 0
+
+        hook = MongoHook(mongo_conn_id=self.mongo_conn_id)
+        collection = hook.get_collection(self.mongo_collection, self.mongo_db)
+
+        result = collection.update_many(
+            {"_id": {"$in": ids}},
+            {"$set": {"processed": True, "processed_at": datetime.now()}},
+        )
+
+        self.log.info("Atualizados %s registros como processed=true.", result.modified_count)
+        return result.modified_count
 
         # --- NOVA LÓGICA DE INSERÇÃO (UPSERT) ---
         if all_jobs:
@@ -154,7 +257,13 @@ class LinkedInToMongoOperator(BaseOperator):
                 operations = [
                     UpdateOne(
                         {"url": job["url"]},  # Chave de busca
-                        {"$set": job},        # O que será salvo
+                        {
+                            "$set": job,                      # Atualiza campos em registros existentes
+                            "$setOnInsert": {
+                                "processed": False,
+                                "processed_at": None,
+                            },  # Define apenas na primeira inserção
+                        },
                         upsert=True           # Permite criar um novo se não achar
                     )
                     for job in all_jobs
@@ -169,3 +278,4 @@ class LinkedInToMongoOperator(BaseOperator):
                     )
             except Exception as e:
                 self.log.error(f"Erro ao salvar no MongoDB: {e}")
+                raise
