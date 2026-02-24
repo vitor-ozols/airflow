@@ -190,7 +190,7 @@ class LinkedInToMongoOperator(BaseOperator):
                         "$set": job,
                         "$setOnInsert": {
                             "processed": False,
-                            "processed_at": None,
+                            "processed_at": "",
                         },
                     },
                     upsert=True,
