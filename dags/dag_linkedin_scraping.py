@@ -1,5 +1,6 @@
 from airflow import DAG
 from datetime import datetime
+from airflow.timetables.trigger import MultipleCronTriggerTimetable
 from linkedin_operator import LinkedInToMongoOperator
 
 KEYWORDS = ['Airflow', 'Python', 'Data Engineering', 'RPA', 'Scraping']
@@ -10,9 +11,13 @@ BLACKLIST_COMPANIES = [
 ]
 
 with DAG(
-    'linkedin_scraping_and_ia_analysis',
+    'linkedin_scraping',
     start_date=datetime(2024, 1, 1),
-    schedule='@daily',
+    schedule=MultipleCronTriggerTimetable(
+        "0,30 8-19 * * *",
+        "0 20 * * *",
+        timezone="UTC",
+    ),
     catchup=False,
     max_active_tasks=1,
     tags=['linkedin', 'scraping', 'ia_analysis']

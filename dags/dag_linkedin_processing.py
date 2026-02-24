@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from airflow.providers.standard.operators.python import PythonOperator, ShortCircuitOperator
 from airflow.models.xcom_arg import XComArg
 from airflow.models import Variable
+from airflow.timetables.trigger import MultipleCronTriggerTimetable
 from linkedin_operator import (
     LinkedInFetchUnprocessedOperator,
     LinkedInMarkProcessedOperator,
@@ -116,7 +117,11 @@ def send_email_smtp(payload: dict) -> None:
 with DAG(
     dag_id='linkedin_processing_pipeline',
     start_date=datetime(2024, 1, 1),
-    schedule='@daily',
+    schedule=MultipleCronTriggerTimetable(
+        "15,45 8-19 * * *",
+        "15 20 * * *",
+        timezone="UTC",
+    ),
     catchup=False,
     max_active_tasks=1,
     tags=['linkedin', 'processing'],
