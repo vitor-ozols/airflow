@@ -90,18 +90,41 @@ class LinkedInToMongoOperator(BaseOperator):
             }
 
             try:
+                self.log.info(
+                    "LinkedIn request | start=%s | url=%s | params=%s",
+                    start,
+                    url,
+                    self._format_for_log(params),
+                )
+                request_started_at = time.perf_counter()
                 resp = requests.get(url, params=params, timeout=15)
+                elapsed_ms = int((time.perf_counter() - request_started_at) * 1000)
+                self.log.info(
+                    "LinkedIn response | start=%s | status_code=%s | elapsed_ms=%s | response_size=%s",
+                    start,
+                    resp.status_code,
+                    elapsed_ms,
+                    len(resp.text or ""),
+                )
                 if resp.status_code != 200:
                     self.log.error(
-                        "Falha ao buscar vagas (status=%s). Response:\n%s",
+                        "Falha ao buscar vagas | start=%s | status_code=%s | params=%s | response=\n%s",
+                        start,
                         resp.status_code,
+                        self._format_for_log(params),
                         self._format_for_log(resp.text),
                     )
                     break
 
                 sel = Selector(text=resp.text)
                 cards = sel.css("li .base-search-card")
-                if not cards: break
+                cards_count = len(cards)
+                self.log.info("LinkedIn parse | start=%s | cards_encontrados=%s", start, cards_count)
+                if not cards:
+                    self.log.info("Nenhuma vaga retornada pelo LinkedIn para start=%s. Encerrando paginação.", start)
+                    break
+
+                jobs_before_page = len(all_jobs)
 
                 for card in cards:
                     # Captura o nome da empresa
@@ -130,6 +153,14 @@ class LinkedInToMongoOperator(BaseOperator):
                             "timestamp": (datetime.now() - timedelta(seconds=seconds)).strftime("%Y-%m-%d %H:%M:%S")
                         })
 
+                jobs_added = len(all_jobs) - jobs_before_page
+                self.log.info(
+                    "LinkedIn page summary | start=%s | cards=%s | vagas_adicionadas=%s | total_acumulado=%s",
+                    start,
+                    cards_count,
+                    jobs_added,
+                    len(all_jobs),
+                )
                 start += 25
                 time.sleep(2)
 
@@ -144,6 +175,8 @@ class LinkedInToMongoOperator(BaseOperator):
                     start,
                 )
                 raise
+
+        self.log.info("LinkedIn scraping finalizado | keyword=%s | total_vagas=%s", self.keyword, len(all_jobs))
 
 
 class LinkedInFetchUnprocessedOperator(BaseOperator):
