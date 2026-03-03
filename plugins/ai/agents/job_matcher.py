@@ -83,7 +83,7 @@ def get_agent() -> Agent:
     return _agent
 
 
-def build_user_prompt(cv_markdown: str, jobs: List[Job], top_k: int = 8) -> str:
+def build_user_prompt(cv_markdown: str, jobs: List[Job], top_k: int = 20) -> str:
     jobs_payload = [j.model_dump() for j in jobs]
 
     return f"""
@@ -102,7 +102,7 @@ def build_user_prompt(cv_markdown: str, jobs: List[Job], top_k: int = 8) -> str:
     - Return at most {top_k} items in `top_recommendations`, ordered best to worst.
     - Use a 0-100 score with this weighting:
     - Technical stack match: 40%
-    - Seniority/role scope match: 25%
+    - Seniority/role scope match: 5%
     - Domain/context match: 20%
     - Location/remote/language constraints: 15%
     - Reasons must be grounded ONLY in the CV. Do not invent experience.

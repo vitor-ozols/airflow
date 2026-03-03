@@ -23,6 +23,8 @@ class LinkedInToMongoOperator(BaseOperator):
         mongo_collection,
         days_back=1,
         blacklist=None,
+        remote_only=False,
+        distance=None,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -34,6 +36,8 @@ class LinkedInToMongoOperator(BaseOperator):
         self.mongo_collection = mongo_collection
         self.days_back = days_back
         self.blacklist = blacklist or []
+        self.remote_only = remote_only
+        self.distance = distance
 
     def _format_for_log(self, value, max_length=20000):
         if value is None:
@@ -83,11 +87,15 @@ class LinkedInToMongoOperator(BaseOperator):
             params = {
                 "keywords": self.keyword,
                 "location": self.location,
-                "geo_id": self.geo_id,
+                "geoId": self.geo_id,
                 "start": start,
                 "sortBy": "DD",
                 "f_TPR": f_tpr_value
             }
+            if self.distance:
+                params["distance"] = str(self.distance)
+            if self.remote_only:
+                params["f_WT"] = "2"
 
             try:
                 self.log.info(
