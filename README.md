@@ -15,10 +15,10 @@ As dependências Python são gerenciadas com Poetry (`pyproject.toml`).
 make up
 ```
 
-Isso executa a inicialização do banco e cria usuário admin:
+Isso executa a inicialização do banco e cria o usuário admin:
 
 - Usuário: `admin`
-- Senha: `admin`
+- Senha: veja com `make pass`
 
 Acesse: http://localhost:8080
 
@@ -48,5 +48,5 @@ make up
 
 Pegar senha do webserver:
 ```
-docker compose exec airflow-api-server cat /opt/airflow/simple_auth_manager_passwords.json.generated
+make pass
 ```
