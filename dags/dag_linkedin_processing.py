@@ -4,6 +4,7 @@ from airflow.providers.standard.operators.python import PythonOperator, ShortCir
 from airflow.models.xcom_arg import XComArg
 from airflow.models import Variable
 from airflow.timetables.trigger import MultipleCronTriggerTimetable
+from linkedin_config import KEYWORDS
 from linkedin_operator import (
     LinkedInFetchUnprocessedOperator,
     LinkedInMarkProcessedOperator,
@@ -133,6 +134,7 @@ with DAG(
         mongo_db='airflow',
         mongo_collection='linkedin_jobs',
         limit=50,
+        keywords=KEYWORDS,
     )
 
     has_jobs = ShortCircuitOperator(

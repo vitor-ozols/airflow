@@ -2,9 +2,10 @@ import re
 import time
 import json
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from scrapy.selector import Selector
 from pymongo import UpdateOne
+from pymongo import DESCENDING
 from bson import ObjectId
 
 from airflow.models import BaseOperator
@@ -63,35 +64,51 @@ class LinkedInToMongoOperator(BaseOperator):
         return text
 
     def _parse_to_seconds(self, text):
-        if not text: return 9999999
-        text = text.lower().strip()
-        patterns = [(r"(\d+)\s*(min|m)", 60), (r"(\d+)\s*(hour|h)", 3600), (r"(\d+)\s*(day|d)", 86400)]
-        for pattern, mult in patterns:
-            m = re.search(pattern, text)
-            if m: return int(m.group(1)) * mult
-        return 9999999
+        if not text:
+            return None
+
+        normalized = text.lower().strip()
+        if normalized in {"just now", "agora", "now"}:
+            return 0
+
+        patterns = [
+            (r"(\d+)\s*(min|mins|minute|minutes|m)\b", 60),
+            (r"(\d+)\s*(hour|hours|hora|horas|hr|hrs|h)\b", 3600),
+            (r"(\d+)\s*(day|days|dia|dias|d)\b", 86400),
+            (r"(\d+)\s*(week|weeks|semana|semanas|w)\b", 604800),
+        ]
+
+        for pattern, multiplier in patterns:
+            match = re.search(pattern, normalized)
+            if match:
+                return int(match.group(1)) * multiplier
+
+        return None
 
     def execute(self, context):
         hook = MongoHook(mongo_conn_id=self.mongo_conn_id)
         all_jobs = []
         seen_urls = set()
+        search_label = self.keyword or "ALL_JOBS"
         
         seconds_limit = int(self.days_back) * 86400
         f_tpr_value = f"r{seconds_limit}"
         
-        self.log.info(f"Buscando: {self.keyword}. Blacklist: {self.blacklist}")
+        self.log.info(f"Buscando: {search_label}. Blacklist: {self.blacklist}")
 
         start = 0
         while True:
             url = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
             params = {
-                "keywords": self.keyword,
                 "location": self.location,
-                "geoId": self.geo_id,
                 "start": start,
                 "sortBy": "DD",
                 "f_TPR": f_tpr_value
             }
+            if self.keyword:
+                params["keywords"] = self.keyword
+            if self.geo_id:
+                params["geoId"] = self.geo_id
             if self.distance:
                 params["distance"] = str(self.distance)
             if self.remote_only:
@@ -149,16 +166,22 @@ class LinkedInToMongoOperator(BaseOperator):
                         if clean_url in seen_urls: continue
                         seen_urls.add(clean_url)
 
-                        posted_text = (card.css('time::text').get() or "0 mins").strip()
+                        posted_text = (card.css('time::text').get() or "").strip()
                         seconds = self._parse_to_seconds(posted_text)
+                        posted_at = (
+                            datetime.now(timezone.utc) - timedelta(seconds=seconds)
+                            if seconds is not None else None
+                        )
 
                         all_jobs.append({
                             "title": card.css('h3.base-search-card__title::text').get().strip(),
                             "company": company,
                             "location": card.css('span.job-search-card__location::text').get().strip(),
                             "url": clean_url,
-                            "keyword": self.keyword,
-                            "timestamp": (datetime.now() - timedelta(seconds=seconds)).strftime("%Y-%m-%d %H:%M:%S")
+                            "keyword": self.keyword or "ALL_JOBS",
+                            "posted_text": posted_text,
+                            "posted_seconds": seconds,
+                            "timestamp": posted_at.strftime("%Y-%m-%d %H:%M:%S") if posted_at else "",
                         })
 
                 jobs_added = len(all_jobs) - jobs_before_page
@@ -179,12 +202,12 @@ class LinkedInToMongoOperator(BaseOperator):
 
                 self.log.exception(
                     "Erro na paginação para keyword=%s, start=%s",
-                    self.keyword,
+                    search_label,
                     start,
                 )
                 raise
 
-        self.log.info("LinkedIn scraping finalizado | keyword=%s | total_vagas=%s", self.keyword, len(all_jobs))
+        self.log.info("LinkedIn scraping finalizado | keyword=%s | total_vagas=%s", search_label, len(all_jobs))
         if not all_jobs:
             self.log.info("Nenhuma vaga coletada para inserir no MongoDB.")
             return {"inserted": 0, "updated": 0, "matched": 0, "total_scraped": 0}
@@ -208,14 +231,14 @@ class LinkedInToMongoOperator(BaseOperator):
 
             self.log.info(
                 "Mongo insert start | keyword=%s | collection=%s | operations=%s",
-                self.keyword,
+                search_label,
                 self.mongo_collection,
                 len(operations),
             )
             result = collection.bulk_write(operations, ordered=False)
             self.log.info(
                 "Mongo insert result | keyword=%s | upserted=%s | modified=%s | matched=%s",
-                self.keyword,
+                search_label,
                 result.upserted_count,
                 result.modified_count,
                 result.matched_count,
@@ -230,7 +253,7 @@ class LinkedInToMongoOperator(BaseOperator):
         except Exception:
             self.log.exception(
                 "Erro ao salvar vagas no MongoDB | keyword=%s | total_vagas=%s",
-                self.keyword,
+                search_label,
                 len(all_jobs),
             )
             raise
@@ -243,6 +266,7 @@ class LinkedInFetchUnprocessedOperator(BaseOperator):
         mongo_db,
         mongo_collection,
         limit=50,
+        keywords=None,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -250,19 +274,33 @@ class LinkedInFetchUnprocessedOperator(BaseOperator):
         self.mongo_db = mongo_db
         self.mongo_collection = mongo_collection
         self.limit = limit
+        self.keywords = keywords or []
 
     def execute(self, context):
         hook = MongoHook(mongo_conn_id=self.mongo_conn_id)
         collection = hook.get_collection(self.mongo_collection, self.mongo_db)
 
-        cursor = collection.find({"processed": False}).limit(int(self.limit))
+        query = {"processed": False}
+        if self.keywords:
+            query["keyword"] = {"$in": self.keywords}
+
+        cursor = (
+            collection
+            .find(query)
+            .sort("timestamp", DESCENDING)
+            .limit(int(self.limit))
+        )
         docs = []
         for doc in cursor:
             if "_id" in doc:
                 doc["_id"] = str(doc["_id"])
             docs.append(doc)
 
-        self.log.info("Encontrados %s registros com processed=false.", len(docs))
+        self.log.info(
+            "Encontrados %s registros com processed=false para keywords=%s, ordenados por timestamp desc.",
+            len(docs),
+            self.keywords or "todas",
+        )
         return docs
 
 

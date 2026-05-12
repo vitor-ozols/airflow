@@ -1,6 +1,5 @@
 # Vitor Ozols  
-**Data Engineer | Cloud & AI Engineering | AWS | Python | SQL | Data Platforms**  
-Ireland  
+**Data Engineer | Cloud & AI Engineering | AWS | Python | Data Platforms** Ireland  
 
 ozolsvoz@gmail.com  
 https://www.linkedin.com/in/vitor-ozols  
@@ -13,56 +12,55 @@ Data Engineer with strong expertise in cloud-native data platforms, distributed 
 
 Experienced in designing scalable data architectures, building robust ETL/ELT pipelines, implementing data governance frameworks, and developing AI-focused Proofs of Concept including Retrieval-Augmented Generation (RAG) systems.
 
-Strong proficiency in Python for data engineering, automation, large-scale processing, and integration of structured and unstructured data.
+Strong proficiency in Python for data engineering, backend development, automation, large-scale processing, and the integration of structured and unstructured data.
 
 ---
 
 ## Core Skills
 
-### Data Engineering
-- Data Platform Architecture (Lakehouse, Data Warehouse, Data Lake)
-- ETL / ELT Pipeline Design
-- Apache Airflow (Orchestration)
-- Apache Spark / PySpark
-- Data Modeling (Dimensional & Analytical)
-- Data Contracts & SLA Definition
-- Data Governance & Security (Encryption, Access Control, GDPR/LGPD)
-- Performance Optimization & Query Tuning
+### Data Engineering & Big Data
+- **Data Platform Architecture:** Lakehouse, Data Warehouse, Data Lake
+- **Big Data Processing:** Apache Spark / PySpark, Databricks
+- **Query Engines:** Hive, Presto, Dremio
+- **Orchestration & Integration:** Apache Airflow, ETL / ELT Pipeline Design, Pentaho
+- **Data Management:** Data Modeling (Dimensional & Analytical), Master Data Management (MDM), Data Quality
+- **Governance:** Data Contracts & SLA Definition, Data Governance & Security (Encryption, Access Control, GDPR/LGPD)
 
-### Cloud & Infrastructure
-- AWS (S3, Glue, Athena, RDS, IAM, EC2)
-- Infrastructure as Code (Terraform)
-- CI/CD for Data Pipelines (GitHub Actions)
-- Distributed Systems & Scalable Architectures
+### Cloud & DevOps
+- **Cloud Platforms:** AWS (S3, Glue, Athena, RDS, IAM, EC2, Lambda, EKS), Azure (Azure AI Studio)
+- **Containers & Orchestration:** Docker, Kubernetes
+- **Infrastructure & Automation:** Terraform, Ansible, Linux OS
+- **Version Control & CI/CD:** Git, GitHub, Bitbucket, GitHub Actions
+- **Systems:** Distributed Systems & Scalable Architectures
 
 ### AI & Advanced Analytics
-- Retrieval-Augmented Generation (RAG)
-- LLM Integration & AI PoCs
-- Time Series Forecasting
-- Feature Engineering
-- Experimentation & Model Evaluation
-- Python for ML Workflows
+- **AI & ML:** Retrieval-Augmented Generation (RAG), LLM Integration, AI PoCs
+- **Data Science:** Time Series Forecasting, Feature Engineering, Model Evaluation
+- **Data Apps:** Streamlit
 
-### Programming & Tools
-- Python (Pandas, SQLAlchemy, Selenium, Scrapy)
-- SQL (Analytical & Performance-Oriented Queries)
-- Flask APIs & System Integration
-- Web Scraping & Data Crawlers
-- Automation & RPA Development
+### Software Engineering & Backend
+- **Programming Languages:** Python, SQL (PostgreSQL, MySQL)
+- **Backend & APIs:** FastAPI, Flask, REST APIs
+- **Software Architecture:** Systems Analysis, Object-Oriented Programming (OOP), Data Structures, Design Patterns, Code Review
+- **Libraries & Tools:** Pandas, SQLAlchemy, Selenium, Scrapy
+- **Web & Data Formats:** HTML/HTML5, JSON, XML
+- **Specialties:** Web Scraping, Crawlers, Automation, Backend Development
 
----
-
-# Professional Experience
-
-## CWS Platform  
-### Data Engineer  
-**November 2025 – Present**
+### Domain & Additional Skills
+- **Civil & Cost Engineering:** Cost Engineering, Quantity Surveys, Building Maintenance, Construction Materials
+- **Software & Tools:** AutoCAD, Microsoft Office (Excel), Google Docs
 
 ---
 
-## B3  
-### Platform Data Engineer  
-**June 2024 – November 2025**
+## Professional Experience
+
+### CWS Platform  
+**Data Engineer** | *November 2025 – Present*
+
+---
+
+### B3  
+**Platform Data Engineer** | *June 2024 – November 2025*
 
 - Designed and implemented scalable cloud-based data platform architectures (AWS)
 - Defined and managed data ingestion and processing pipelines using Apache Airflow and Apache Spark
@@ -79,10 +77,8 @@ Strong proficiency in Python for data engineering, automation, large-scale proce
 
 ---
 
-## CWS Platform  
-### Data Engineer  
-**April 2022 – June 2024**  
-São Paulo, Brazil
+### CWS Platform  
+**Data Engineer** | *April 2022 – June 2024* | *São Paulo, Brazil*
 
 - Designed and maintained robust ETL pipelines using AWS (S3, Glue, Athena, RDS), Apache Airflow, and PySpark
 - Built cloud-native ingestion pipelines for Google Play and Apple Store data
@@ -91,9 +87,7 @@ São Paulo, Brazil
 
 ---
 
-### Mid-Level Technical Content & Automation Analyst  
-**June 2019 – March 2022**  
-São Paulo, Brazil
+**Mid-Level Technical Content & Automation Analyst** | *June 2019 – March 2022* | *São Paulo, Brazil*
 
 - Automated complex business workflows using Python
 - Built distributed RPA solutions operating across multiple machines
@@ -104,9 +98,8 @@ São Paulo, Brazil
 
 ---
 
-## Cervejaria DUCABRA  
-### Co-Founder  
-**December 2019 – October 2020**
+### Cervejaria DUCABRA  
+**Co-Founder** | *December 2019 – October 2020*
 
 - Administrative and operational management
 - Specialty beer recipe development
@@ -114,17 +107,15 @@ São Paulo, Brazil
 
 ---
 
-## Confeitaria Ozols  
-### Co-Founder  
-**July 2018 – June 2019**
+### Confeitaria Ozols  
+**Co-Founder** | *July 2018 – June 2019*
 
 - Administrative and operational management
 
 ---
 
-## Nova Engenharia  
-### Civil Engineering Intern  
-**January 2018 – June 2018**
+### Nova Engenharia  
+**Civil Engineering Intern** | *January 2018 – June 2018*
 
 - Quantity surveys and cost analysis
 - Construction metrics tracking
@@ -132,19 +123,16 @@ São Paulo, Brazil
 
 ---
 
-## Master House Manutenção e Reformas  
-### Civil Engineering Intern  
-**January 2017 – December 2017**
+### Master House Manutenção e Reformas  
+**Civil Engineering Intern** | *January 2017 – December 2017*
 
 - Quantity surveys and cost analysis
 - Procurement and sourcing support
 
 ---
 
-## Donke Materiais para Construção  
-### Sales & Technical Support Assistant  
-**January 2007 – January 2017**  
-São Paulo, Brazil
+### Donke Materiais para Construção  
+**Sales & Technical Support Assistant** | *January 2007 – January 2017* | *São Paulo, Brazil*
 
 - Technical support for construction clients
 - Inventory control and supplier coordination
@@ -153,28 +141,17 @@ São Paulo, Brazil
 
 ---
 
-# Education
+## Education
 
-## Faculdade de Tecnologia de São Paulo (FATEC-SP)  
-**Bachelor of Technology in Civil Construction**  
-2013 – 2017
+**Escola Politécnica da USP** | *Postgraduate in Artificial Intelligence* | *January 2024 – January 2026* **Univesp** | *BSc in Data Science* | *August 2021 – December 2025* **Univesp** | *BSc in Information Technology (Data Analysis Focus)* | *August 2021 – August 2024* **XP Educação** | *Postgraduate in Data Engineering* | *June 2022 – April 2023* **IBEC – Brazilian Institute of Cost Engineering** | *MBA in Cost Engineering (Civil Engineering)* | *2019 – 2021* **Faculdade de Tecnologia de São Paulo (FATEC-SP)** | *Bachelor of Technology in Civil Construction* | *2013 – 2017*
 
-## Escola Politécnica da USP  
-**Postgraduate in Artificial Intelligence**  
-January 2024 – January 2026
+---
 
-## Univesp  
-**BSc in Data Science**  
-August 2021 – December 2025  
+## Licenses & Certifications
 
-## Univesp  
-**BSc in Information Technology (Data Analysis Focus)**  
-August 2021 – August 2024  
-
-## XP Educação  
-**Postgraduate in Data Engineering**  
-June 2022 – April 2023  
-
-## IBEC – Brazilian Institute of Cost Engineering  
-**MBA in Cost Engineering (Civil Engineering)**  
-2019 – 2021  
+- **XP Educação:** Data Engineer (2022) | Cloud Data Engineering (2022)
+- **Alura (2023–2024):** Amazon S3 | AWS SQS | IaC with Ansible & Terraform | Streamlit | Flask Webapps | SRE Reliability | Computer Vision (OCR & OpenCV) | Machine Learning with SKLearn | GPT & Python API | RPA No/Low Code
+- **DataCamp (2021):** Introduction to PySpark | Intermediate Python | Data Manipulation with pandas | Web Scraping in Python
+- **FIAP (2021–2022):** Linux Fundamentals | Emerging Technological Solutions | Python | Business Intelligence (BI)
+- **Udemy:** Apache Airflow Básico (2021) | Pentaho Data Integration - PDI (2022)
+- **Others:** Build Agents with n8n (*LinkedIn*, 2026) | Data Science Orientation (*Coursera*, 2021) | Software Eberick 2018 (*AltoQi Education*) | Autocad 2013 Básico (*Senac São Paulo*)
