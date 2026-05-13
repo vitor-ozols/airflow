@@ -1,8 +1,20 @@
 from airflow import DAG
 from datetime import datetime
 from airflow.timetables.trigger import MultipleCronTriggerTimetable
-from linkedin_config import KEYWORDS
 from linkedin_operator import LinkedInToMongoOperator
+
+
+KEYWORDS = [
+    "Airflow",
+    "Python",
+    "Data Engineering",
+    "RPA",
+    "Scraping",
+    "IT",
+    "IT Support",
+]
+
+
 
 BLACKLIST_COMPANIES = [
     'Fruition Group Ireland', 
