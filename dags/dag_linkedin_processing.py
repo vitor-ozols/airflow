@@ -4,7 +4,7 @@ from airflow.providers.standard.operators.python import PythonOperator, ShortCir
 from airflow.models.xcom_arg import XComArg
 from airflow.models import Variable
 from airflow.timetables.trigger import MultipleCronTriggerTimetable
-from linkedin_config import KEYWORDS
+
 from linkedin_operator import (
     LinkedInFetchUnprocessedOperator,
     LinkedInMarkProcessedOperator,
@@ -17,6 +17,15 @@ from email.message import EmailMessage
 
 TO_EMAIL = "ozolsvoz@gmail.com"
 
+KEYWORDS = [
+    "Airflow",
+    "Python",
+    "Data Engineering",
+    "RPA",
+    "Scraping",
+    "IT",
+    "IT Support",
+]
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
