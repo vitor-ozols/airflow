@@ -30,6 +30,7 @@ SITEMAP_URLS = [
     "https://www.collinsmcnicholas.ie/job/sitemap.xml",
     {
         "url": "https://www.cpl.com/job/sitemap.xml",
+        "include_url_regex": r"^https://www\.cpl\.com/job/",
         "max_urls_per_run": 250,
     },
     "https://www.nextgeneration.ie/job/sitemap.xml",
