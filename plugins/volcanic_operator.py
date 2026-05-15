@@ -1,4 +1,5 @@
 import json
+import html as html_lib
 import re
 import time
 from datetime import datetime, timedelta, timezone
@@ -110,7 +111,33 @@ class VolcanicSitemapToMongoOperator(BaseOperator):
         entries = []
         visited = set()
         for sitemap_config in self._coerce_sitemap_configs():
-            entries.extend(self._collect_entries_from_sitemap(sitemap_config, visited))
+            if sitemap_config.get("type") == "greenhouse_jobs_api":
+                entries.extend(self._collect_entries_from_greenhouse_api(sitemap_config))
+            else:
+                entries.extend(self._collect_entries_from_sitemap(sitemap_config, visited))
+        return entries
+
+    def _collect_entries_from_greenhouse_api(self, sitemap_config):
+        api_url = sitemap_config["url"]
+        payload = json.loads(self._request_text(api_url))
+        entries = []
+        for job in payload.get("jobs", []):
+            url = job.get("absolute_url")
+            if not url or not self._matches_sitemap_filters(url, sitemap_config):
+                continue
+            entries.append(
+                {
+                    "url": url,
+                    "sitemap_url": api_url,
+                    "sitemap_lastmod": job.get("updated_at", ""),
+                    "configured_sitemap_url": sitemap_config["configured_url"],
+                    "max_urls_per_run": sitemap_config.get("max_urls_per_run"),
+                    "source": sitemap_config.get("source", "greenhouse"),
+                    "source_type": sitemap_config.get("type"),
+                    "company": sitemap_config.get("company", ""),
+                    "greenhouse_job": job,
+                }
+            )
         return entries
 
     def _collect_entries_from_sitemap(self, sitemap_config, visited):
@@ -145,19 +172,26 @@ class VolcanicSitemapToMongoOperator(BaseOperator):
             loc = url_node.find("sm:loc", namespace)
             if loc is None or not loc.text:
                 continue
+            url = loc.text.strip()
+            if not self._matches_sitemap_filters(url, sitemap_config):
+                continue
             lastmod = url_node.find("sm:lastmod", namespace)
             entries.append(
-                    {
-                        "url": loc.text.strip(),
-                        "sitemap_url": sitemap_url,
-                        "sitemap_lastmod": lastmod.text.strip() if lastmod is not None and lastmod.text else "",
-                        "configured_sitemap_url": sitemap_config["configured_url"],
-                        "max_urls_per_run": sitemap_config.get("max_urls_per_run"),
-                    }
-                )
+                {
+                    "url": url,
+                    "sitemap_url": sitemap_url,
+                    "sitemap_lastmod": lastmod.text.strip() if lastmod is not None and lastmod.text else "",
+                    "configured_sitemap_url": sitemap_config["configured_url"],
+                    "max_urls_per_run": sitemap_config.get("max_urls_per_run"),
+                    "source": sitemap_config.get("source", "volcanic"),
+                }
+            )
         return entries
 
     def _fetch_job(self, url, sitemap_entry):
+        if sitemap_entry.get("source_type") == "greenhouse_jobs_api":
+            return self._greenhouse_job_to_document(sitemap_entry["greenhouse_job"], sitemap_entry)
+
         html = self._request_text(url)
         selector = Selector(text=html)
 
@@ -168,6 +202,8 @@ class VolcanicSitemapToMongoOperator(BaseOperator):
                 "#template-job-100 header h2::text",
                 ".template-job-page header h1::text",
                 ".template-job-page header h2::text",
+                ".block-job-description .job-title::text",
+                ".job-title::text",
                 "h1::text",
             ],
         )
@@ -176,11 +212,16 @@ class VolcanicSitemapToMongoOperator(BaseOperator):
             [
                 "#template-job-100 .desc article",
                 ".template-job-page .desc article",
+                ".block-job-description .job-description",
+                ".job-description",
                 "article",
             ],
         )
         description = self._text_from_html(description_html)
-        table_fields = self._parse_table_fields(selector)
+        table_fields = {
+            **self._parse_table_fields(selector),
+            **self._parse_job_component_fields(selector),
+        }
         json_ld = self._parse_json_ld_job(selector)
 
         parsed_url = urlparse(url)
@@ -190,6 +231,8 @@ class VolcanicSitemapToMongoOperator(BaseOperator):
                 "#template-job-100 a.apply-now::attr(href)",
                 ".template-job-page a.apply-now::attr(href)",
                 "a[href$='/apply']::attr(href)",
+                "a[href='#applynow']::attr(href)",
+                "a[href*='apply']::attr(href)",
             ],
         )
 
@@ -204,11 +247,13 @@ class VolcanicSitemapToMongoOperator(BaseOperator):
 
         if not title:
             title = json_ld.get("title", "")
+        if not description_html and json_ld.get("description"):
+            description_html = json_ld.get("description", "")
         if not description:
             description = self._text_from_html(json_ld.get("description", ""))
 
         return {
-            "source": "volcanic",
+            "source": sitemap_entry.get("source", "volcanic"),
             "source_sitemap_url": sitemap_entry["sitemap_url"],
             "site": parsed_url.netloc,
             "url": url,
@@ -216,12 +261,13 @@ class VolcanicSitemapToMongoOperator(BaseOperator):
             "description": description,
             "description_html": description_html,
             "location": self._field(table_fields, "location") or self._json_ld_location(json_ld),
-            "discipline": self._field(table_fields, "discipline"),
+            "discipline": self._field(table_fields, "discipline", "external posting category", "category"),
             "job_type": self._field(table_fields, "job type", "employment type") or json_ld.get("employmentType", ""),
             "salary": self._field(table_fields, "salary"),
             "contact_name": self._field(table_fields, "contact name"),
             "contact_email": self._field(table_fields, "contact email"),
-            "job_ref": self._field(table_fields, "job ref", "reference", "job reference"),
+            "job_ref": self._field(table_fields, "job ref", "reference", "job reference", "requisition identifier")
+            or self._json_ld_identifier(json_ld),
             "publication_date": publication_date,
             "publication_date_at": self._parse_datetime(publication_date),
             "expiry_date": expiry_date,
@@ -231,6 +277,50 @@ class VolcanicSitemapToMongoOperator(BaseOperator):
             "apply_url": urljoin(url, apply_url) if apply_url else "",
             "company": self._json_ld_company(json_ld) or self._company_from_site(parsed_url.netloc),
             "raw_fields": table_fields,
+            "scraped_at": datetime.now(timezone.utc),
+        }
+
+    def _greenhouse_job_to_document(self, greenhouse_job, sitemap_entry):
+        url = greenhouse_job["absolute_url"]
+        parsed_url = urlparse(url)
+        description_html = html_lib.unescape(greenhouse_job.get("content", ""))
+        publication_date = greenhouse_job.get("first_published", "")
+        expiry_date = greenhouse_job.get("application_deadline") or ""
+        metadata_fields = self._greenhouse_metadata_fields(greenhouse_job)
+
+        return {
+            "source": sitemap_entry.get("source", "greenhouse"),
+            "source_sitemap_url": sitemap_entry["sitemap_url"],
+            "site": parsed_url.netloc,
+            "url": url,
+            "title": greenhouse_job.get("title", ""),
+            "description": self._text_from_html(description_html),
+            "description_html": description_html,
+            "location": self._greenhouse_location(greenhouse_job),
+            "discipline": self._greenhouse_department(greenhouse_job),
+            "job_type": metadata_fields.get("Employment Type", ""),
+            "salary": metadata_fields.get("Salary", ""),
+            "contact_name": "",
+            "contact_email": "",
+            "job_ref": str(greenhouse_job.get("requisition_id") or greenhouse_job.get("id") or ""),
+            "publication_date": publication_date,
+            "publication_date_at": self._parse_datetime(publication_date),
+            "expiry_date": expiry_date,
+            "expiry_date_at": self._parse_datetime(expiry_date),
+            "sitemap_lastmod": sitemap_entry.get("sitemap_lastmod", ""),
+            "sitemap_lastmod_at": self._parse_datetime(sitemap_entry.get("sitemap_lastmod", "")),
+            "apply_url": url,
+            "company": sitemap_entry.get("company")
+            or greenhouse_job.get("company_name", "")
+            or self._company_from_site(parsed_url.netloc),
+            "raw_fields": {
+                "greenhouse_id": greenhouse_job.get("id"),
+                "internal_job_id": greenhouse_job.get("internal_job_id"),
+                "language": greenhouse_job.get("language", ""),
+                "metadata": metadata_fields,
+                "departments": [department.get("name", "") for department in greenhouse_job.get("departments", [])],
+                "offices": [office.get("name", "") for office in greenhouse_job.get("offices", [])],
+            },
             "scraped_at": datetime.now(timezone.utc),
         }
 
@@ -310,6 +400,17 @@ class VolcanicSitemapToMongoOperator(BaseOperator):
             configs.append(config)
         return configs
 
+    def _matches_sitemap_filters(self, url, sitemap_config):
+        include_regex = sitemap_config.get("include_url_regex")
+        if include_regex and not re.search(include_regex, url):
+            return False
+
+        exclude_regex = sitemap_config.get("exclude_url_regex")
+        if exclude_regex and re.search(exclude_regex, url):
+            return False
+
+        return True
+
     def _parse_table_fields(self, selector):
         fields = {}
         for row in selector.css("#template-job-100 table tr, .template-job-page table tr"):
@@ -319,6 +420,24 @@ class VolcanicSitemapToMongoOperator(BaseOperator):
             key = self._clean_text(" ".join(cells[0].css("::text").getall())).rstrip(":").lower()
             value = self._clean_text(" ".join(cells[1].css("::text").getall()))
             if key and value:
+                fields[key] = value
+        return fields
+
+    def _parse_job_component_fields(self, selector):
+        field_names = {
+            "job-component-requisition-identifier": "requisition identifier",
+            "job-component-location": "location",
+            "job-component-dropdown-field-1": "external posting category",
+            "job-component-employment-type": "employment type",
+        }
+        fields = {}
+        for item in selector.css(".job-component-icon-and-text"):
+            classes = item.attrib.get("class", "").split()
+            key = next((field_names[class_name] for class_name in classes if class_name in field_names), "")
+            if not key:
+                continue
+            value = self._clean_text(" ".join(item.css("span::text").getall()))
+            if value:
                 fields[key] = value
         return fields
 
@@ -339,6 +458,37 @@ class VolcanicSitemapToMongoOperator(BaseOperator):
         if isinstance(organization, dict):
             return organization.get("name", "")
         return ""
+
+    def _json_ld_identifier(self, json_ld):
+        identifier = json_ld.get("identifier") if isinstance(json_ld, dict) else None
+        if isinstance(identifier, dict):
+            return identifier.get("value", "")
+        if isinstance(identifier, str):
+            return identifier
+        return ""
+
+    def _greenhouse_metadata_fields(self, greenhouse_job):
+        fields = {}
+        for item in greenhouse_job.get("metadata", []):
+            name = item.get("name")
+            value = item.get("value")
+            if name and value is not None:
+                fields[name] = value
+        return fields
+
+    def _greenhouse_location(self, greenhouse_job):
+        location = greenhouse_job.get("location")
+        if isinstance(location, dict):
+            return location.get("name", "")
+        return ""
+
+    def _greenhouse_department(self, greenhouse_job):
+        departments = [
+            department.get("name", "")
+            for department in greenhouse_job.get("departments", [])
+            if department.get("name")
+        ]
+        return ", ".join(departments)
 
     def _json_ld_location(self, json_ld):
         location = json_ld.get("jobLocation") if isinstance(json_ld, dict) else None
