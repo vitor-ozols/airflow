@@ -119,15 +119,18 @@ class VolcanicSitemapToMongoOperator(BaseOperator):
 
     def _collect_entries_from_greenhouse_api(self, sitemap_config):
         api_url = sitemap_config["url"]
+        board_token = self._greenhouse_board_token(api_url)
         payload = json.loads(self._request_text(api_url))
         entries = []
         for job in payload.get("jobs", []):
             url = job.get("absolute_url")
             if not url or not self._matches_sitemap_filters(url, sitemap_config):
                 continue
+            job_api_url = self._greenhouse_job_api_url(board_token, job)
             entries.append(
                 {
                     "url": url,
+                    "source_api_url": job_api_url,
                     "sitemap_url": api_url,
                     "sitemap_lastmod": job.get("updated_at", ""),
                     "configured_sitemap_url": sitemap_config["configured_url"],
@@ -255,6 +258,7 @@ class VolcanicSitemapToMongoOperator(BaseOperator):
         return {
             "source": sitemap_entry.get("source", "volcanic"),
             "source_sitemap_url": sitemap_entry["sitemap_url"],
+            "source_api_url": sitemap_entry.get("source_api_url", ""),
             "site": parsed_url.netloc,
             "url": url,
             "title": title,
@@ -291,6 +295,7 @@ class VolcanicSitemapToMongoOperator(BaseOperator):
         return {
             "source": sitemap_entry.get("source", "greenhouse"),
             "source_sitemap_url": sitemap_entry["sitemap_url"],
+            "source_api_url": sitemap_entry.get("source_api_url", ""),
             "site": parsed_url.netloc,
             "url": url,
             "title": greenhouse_job.get("title", ""),
@@ -318,8 +323,8 @@ class VolcanicSitemapToMongoOperator(BaseOperator):
                 "internal_job_id": greenhouse_job.get("internal_job_id"),
                 "language": greenhouse_job.get("language", ""),
                 "metadata": metadata_fields,
-                "departments": [department.get("name", "") for department in greenhouse_job.get("departments", [])],
-                "offices": [office.get("name", "") for office in greenhouse_job.get("offices", [])],
+                "departments": [department.get("name", "") for department in greenhouse_job.get("departments") or []],
+                "offices": [office.get("name", "") for office in greenhouse_job.get("offices") or []],
             },
             "scraped_at": datetime.now(timezone.utc),
         }
@@ -469,7 +474,7 @@ class VolcanicSitemapToMongoOperator(BaseOperator):
 
     def _greenhouse_metadata_fields(self, greenhouse_job):
         fields = {}
-        for item in greenhouse_job.get("metadata", []):
+        for item in greenhouse_job.get("metadata") or []:
             name = item.get("name")
             value = item.get("value")
             if name and value is not None:
@@ -485,10 +490,20 @@ class VolcanicSitemapToMongoOperator(BaseOperator):
     def _greenhouse_department(self, greenhouse_job):
         departments = [
             department.get("name", "")
-            for department in greenhouse_job.get("departments", [])
+            for department in greenhouse_job.get("departments") or []
             if department.get("name")
         ]
         return ", ".join(departments)
+
+    def _greenhouse_board_token(self, api_url):
+        match = re.search(r"/boards/([^/]+)/jobs", api_url)
+        return match.group(1) if match else ""
+
+    def _greenhouse_job_api_url(self, board_token, greenhouse_job):
+        job_id = greenhouse_job.get("id")
+        if not board_token or not job_id:
+            return ""
+        return f"https://boards-api.greenhouse.io/v1/boards/{board_token}/jobs/{job_id}?content=true"
 
     def _json_ld_location(self, json_ld):
         location = json_ld.get("jobLocation") if isinstance(json_ld, dict) else None
