@@ -354,6 +354,7 @@ class LinkedInToMongoOperator(BaseOperator):
                             "posted_at": posted_at,
                             "scraped_at": scraped_at,
                             "last_seen_at": scraped_at,
+                            "active": True,
                         }
 
                         if self.fetch_details:

@@ -12,6 +12,7 @@ from job_sources_config import (
 )
 from linkedin_operator import LinkedInToMongoOperator
 from pymongo import ASCENDING, DESCENDING, UpdateOne
+from pymongo.errors import BulkWriteError
 
 
 MONGO_CONN_ID = "mongo_vitor_ozols"
@@ -47,7 +48,27 @@ def sync_volcanic_jobs_to_unified(batch_size=100, max_docs_per_run=5000):
         if not operations:
             return
 
-        result = target_collection.bulk_write(operations, ordered=False)
+        try:
+            result = target_collection.bulk_write(operations, ordered=False)
+        except BulkWriteError as error:
+            details = error.details or {}
+            write_errors = details.get("writeErrors", [])
+            sample_errors = []
+            for write_error in write_errors[:5]:
+                operation = write_error.get("op", {})
+                sample_errors.append(
+                    {
+                        "index": write_error.get("index"),
+                        "code": write_error.get("code"),
+                        "errmsg": write_error.get("errmsg"),
+                        "url": (operation.get("q") or {}).get("url"),
+                    }
+                )
+            raise RuntimeError(
+                "Mongo bulk write failed while syncing volcanic jobs to unified "
+                f"collection. batch_size={len(operations)} errors={sample_errors}"
+            ) from None
+
         totals["inserted"] += result.upserted_count
         totals["updated"] += result.modified_count
         totals["matched"] += result.matched_count
@@ -56,6 +77,8 @@ def sync_volcanic_jobs_to_unified(batch_size=100, max_docs_per_run=5000):
 
     for source_doc in cursor:
         source_original_id = str(source_doc.pop("_id", ""))
+        source_doc.pop("processed", None)
+        source_doc.pop("processed_at", None)
         source_doc["source_collection"] = VOLCANIC_SOURCE_COLLECTION
         source_doc["source_original_id"] = source_original_id
         source_doc["unified_synced_at"] = datetime.now(timezone.utc)
