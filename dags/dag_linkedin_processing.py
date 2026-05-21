@@ -16,6 +16,8 @@ import smtplib
 from email.message import EmailMessage
 
 TO_EMAIL = "ozolsvoz@gmail.com"
+MONGO_DB = "airflow"
+MONGO_COLLECTION = "jobs_unified"
 
 KEYWORDS = [
     "Airflow",
@@ -140,10 +142,9 @@ with DAG(
     fetch_unprocessed = LinkedInFetchUnprocessedOperator(
         task_id='fetch_unprocessed',
         mongo_conn_id='mongo_vitor_ozols',
-        mongo_db='airflow',
-        mongo_collection='linkedin_jobs',
+        mongo_db=MONGO_DB,
+        mongo_collection=MONGO_COLLECTION,
         limit=50,
-        keywords=KEYWORDS,
     )
 
     has_jobs = ShortCircuitOperator(
@@ -173,8 +174,8 @@ with DAG(
     mark_processed = LinkedInMarkProcessedOperator(
         task_id='mark_processed',
         mongo_conn_id='mongo_vitor_ozols',
-        mongo_db='airflow',
-        mongo_collection='linkedin_jobs',
+        mongo_db=MONGO_DB,
+        mongo_collection=MONGO_COLLECTION,
         ids=XComArg(fetch_unprocessed),
     )
 
