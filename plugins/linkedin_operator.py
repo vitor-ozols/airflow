@@ -463,6 +463,17 @@ class LinkedInFetchUnprocessedOperator(BaseOperator):
         self.limit = limit
         self.keywords = keywords or []
 
+    def _serialize_for_xcom(self, value):
+        if isinstance(value, ObjectId):
+            return str(value)
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, list):
+            return [self._serialize_for_xcom(item) for item in value]
+        if isinstance(value, dict):
+            return {key: self._serialize_for_xcom(item) for key, item in value.items()}
+        return value
+
     def execute(self, context):
         hook = MongoHook(mongo_conn_id=self.mongo_conn_id)
         collection = hook.get_collection(self.mongo_collection, self.mongo_db)
@@ -479,9 +490,7 @@ class LinkedInFetchUnprocessedOperator(BaseOperator):
         )
         docs = []
         for doc in cursor:
-            if "_id" in doc:
-                doc["_id"] = str(doc["_id"])
-            docs.append(doc)
+            docs.append(self._serialize_for_xcom(doc))
 
         self.log.info(
             "Encontrados %s registros com processed=false para keywords=%s, ordenados por timestamp desc.",

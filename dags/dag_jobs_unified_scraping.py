@@ -1,5 +1,5 @@
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 
 from airflow import DAG
 from airflow.providers.mongo.hooks.mongo import MongoHook
@@ -9,16 +9,15 @@ from job_sources_config import (
     LINKEDIN_BLACKLIST_COMPANIES,
     LINKEDIN_KEYWORDS,
     LINKEDIN_SEARCH_SCOPES,
-    VOLCANIC_SITEMAP_URLS,
 )
 from linkedin_operator import LinkedInToMongoOperator
-from pymongo import ASCENDING, DESCENDING
-from volcanic_operator import VolcanicSitemapToMongoOperator
+from pymongo import ASCENDING, DESCENDING, UpdateOne
 
 
 MONGO_CONN_ID = "mongo_vitor_ozols"
 MONGO_DB = "airflow"
 MONGO_COLLECTION = "jobs_unified"
+VOLCANIC_SOURCE_COLLECTION = "volcanic_jobs"
 
 
 def create_jobs_unified_indexes():
@@ -27,6 +26,59 @@ def create_jobs_unified_indexes():
     collection.create_index([("url", ASCENDING)], unique=True)
     collection.create_index([("source", ASCENDING), ("scraped_at", DESCENDING)])
     collection.create_index([("company", ASCENDING), ("title", ASCENDING)])
+
+
+def sync_volcanic_jobs_to_unified(batch_size=100, max_docs_per_run=5000):
+    hook = MongoHook(mongo_conn_id=MONGO_CONN_ID)
+    source_collection = hook.get_collection(VOLCANIC_SOURCE_COLLECTION, MONGO_DB)
+    target_collection = hook.get_collection(MONGO_COLLECTION, MONGO_DB)
+
+    cursor = (
+        source_collection
+        .find({"url": {"$exists": True, "$ne": ""}})
+        .batch_size(int(batch_size))
+        .limit(int(max_docs_per_run))
+    )
+
+    totals = {"inserted": 0, "updated": 0, "matched": 0, "total_synced": 0}
+    operations = []
+
+    def flush_operations():
+        if not operations:
+            return
+
+        result = target_collection.bulk_write(operations, ordered=False)
+        totals["inserted"] += result.upserted_count
+        totals["updated"] += result.modified_count
+        totals["matched"] += result.matched_count
+        totals["total_synced"] += len(operations)
+        operations.clear()
+
+    for source_doc in cursor:
+        source_original_id = str(source_doc.pop("_id", ""))
+        source_doc["source_collection"] = VOLCANIC_SOURCE_COLLECTION
+        source_doc["source_original_id"] = source_original_id
+        source_doc["unified_synced_at"] = datetime.now(timezone.utc)
+
+        operations.append(
+            UpdateOne(
+                {"url": source_doc["url"]},
+                {
+                    "$set": source_doc,
+                    "$setOnInsert": {
+                        "processed": False,
+                        "processed_at": "",
+                    },
+                },
+                upsert=True,
+            )
+        )
+
+        if len(operations) >= int(batch_size):
+            flush_operations()
+
+    flush_operations()
+    return totals
 
 
 def task_slug(value):
@@ -49,17 +101,12 @@ with DAG(
         python_callable=create_jobs_unified_indexes,
     )
 
-    scrape_volcanic_jobs = VolcanicSitemapToMongoOperator(
-        task_id="scrape_volcanic_jobs_to_unified",
-        sitemap_urls=VOLCANIC_SITEMAP_URLS,
-        mongo_conn_id=MONGO_CONN_ID,
-        mongo_db=MONGO_DB,
-        mongo_collection=MONGO_COLLECTION,
-        request_delay=0.5,
-        request_timeout=30,
+    sync_volcanic_jobs = PythonOperator(
+        task_id="sync_volcanic_jobs_to_unified",
+        python_callable=sync_volcanic_jobs_to_unified,
     )
 
-    ensure_indexes >> scrape_volcanic_jobs
+    ensure_indexes >> sync_volcanic_jobs
 
     for keyword in LINKEDIN_KEYWORDS:
         normalized_keyword = task_slug(keyword)

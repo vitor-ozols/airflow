@@ -24,6 +24,7 @@ class VolcanicSitemapToMongoOperator(BaseOperator):
         mongo_collection,
         request_delay=0.5,
         request_timeout=30,
+        flush_batch_size=100,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -33,6 +34,7 @@ class VolcanicSitemapToMongoOperator(BaseOperator):
         self.mongo_collection = mongo_collection
         self.request_delay = request_delay
         self.request_timeout = request_timeout
+        self.flush_batch_size = flush_batch_size
         self.session = None
 
     def execute(self, context):
@@ -48,6 +50,7 @@ class VolcanicSitemapToMongoOperator(BaseOperator):
         self.log.info("Sitemap URLs para extrair nesta execução: %s", len(sitemap_entries))
 
         jobs = []
+        totals = {"inserted": 0, "updated": 0, "matched": 0, "total_scraped": 0}
         seen_urls = set()
         for entry in sitemap_entries:
             url = entry["url"]
@@ -63,14 +66,28 @@ class VolcanicSitemapToMongoOperator(BaseOperator):
 
             if job:
                 jobs.append(job)
+                if self._should_flush_jobs(jobs):
+                    self._flush_jobs(collection, jobs, totals)
+                    jobs = []
 
             if self.request_delay:
                 time.sleep(float(self.request_delay))
 
-        self.log.info("Vagas extraídas: %s", len(jobs))
-        if not jobs:
-            return {"inserted": 0, "updated": 0, "matched": 0, "total_scraped": 0}
+        if jobs:
+            self._flush_jobs(collection, jobs, totals)
 
+        self.log.info("Vagas extraídas: %s", totals["total_scraped"])
+        if totals["total_scraped"] == 0:
+            return totals
+
+        return totals
+
+    def _should_flush_jobs(self, jobs):
+        if not self.flush_batch_size:
+            return False
+        return len(jobs) >= int(self.flush_batch_size)
+
+    def _flush_jobs(self, collection, jobs, totals):
         scraped_at = datetime.now(timezone.utc)
         operations = [
             UpdateOne(
@@ -92,20 +109,25 @@ class VolcanicSitemapToMongoOperator(BaseOperator):
             for job in jobs
         ]
 
+        self.log.info(
+            "Mongo batch write start | collection=%s | batch_size=%s",
+            self.mongo_collection,
+            len(operations),
+        )
         result = collection.bulk_write(operations, ordered=False)
         self.log.info(
-            "Mongo result | collection=%s | upserted=%s | modified=%s | matched=%s",
+            "Mongo batch write result | collection=%s | batch_size=%s | upserted=%s | modified=%s | matched=%s",
             self.mongo_collection,
+            len(operations),
             result.upserted_count,
             result.modified_count,
             result.matched_count,
         )
-        return {
-            "inserted": result.upserted_count,
-            "updated": result.modified_count,
-            "matched": result.matched_count,
-            "total_scraped": len(jobs),
-        }
+
+        totals["inserted"] += result.upserted_count
+        totals["updated"] += result.modified_count
+        totals["matched"] += result.matched_count
+        totals["total_scraped"] += len(jobs)
 
     def _collect_sitemap_entries(self):
         entries = []
