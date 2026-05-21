@@ -1,40 +1,8 @@
 from airflow import DAG
 from datetime import datetime
 from airflow.timetables.trigger import MultipleCronTriggerTimetable
+from job_sources_config import LINKEDIN_BLACKLIST_COMPANIES, LINKEDIN_KEYWORDS, LINKEDIN_SEARCH_SCOPES
 from linkedin_operator import LinkedInToMongoOperator
-
-
-KEYWORDS = [
-    "Airflow",
-    "Python",
-    "Data Engineering",
-    "RPA",
-    "Scraping",
-    "IT",
-    "IT Support",
-]
-
-
-
-BLACKLIST_COMPANIES = [
-    'Fruition Group Ireland', 
-    'Brightwater Recruitment',
-]
-
-SEARCH_SCOPES = [
-    {
-        "name": "dublin",
-        "location": "Dublin, Ireland",
-        "geo_id": "105178154",
-        "remote_only": False,
-    },
-    {
-        "name": "europe_remote",
-        "location": "Europe",
-        "geo_id": "91000000",
-        "remote_only": True,
-    },
-]
 
 
 with DAG(
@@ -50,16 +18,16 @@ with DAG(
     tags=['linkedin', 'scraping', 'ia_analysis']
     ) as dag:
 
-    for kw in KEYWORDS:
+    for kw in LINKEDIN_KEYWORDS:
         normalized_kw = kw.lower().replace(" ", "_")
-        for scope in SEARCH_SCOPES:
+        for scope in LINKEDIN_SEARCH_SCOPES:
             LinkedInToMongoOperator(
                 task_id=f"scrape_linkedin_{scope['name']}_{normalized_kw}",
                 keyword=kw,
                 location=scope["location"],
                 geo_id=scope["geo_id"],
                 days_back=1,
-                blacklist=BLACKLIST_COMPANIES,
+                blacklist=LINKEDIN_BLACKLIST_COMPANIES,
                 remote_only=scope["remote_only"],
                 distance=50,
                 mongo_conn_id="mongo_vitor_ozols",
