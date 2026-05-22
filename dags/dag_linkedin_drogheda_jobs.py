@@ -101,6 +101,7 @@ with DAG(
     ),
     catchup=False,
     max_active_tasks=1,
+    max_active_runs=1,
     tags=["linkedin", "drogheda", "email_alerts"],
 ) as dag:
     scrape_drogheda_jobs = LinkedInToMongoOperator(
@@ -112,6 +113,7 @@ with DAG(
         blacklist=[],
         remote_only=False,
         distance=10,
+        max_pages=1,
         mongo_conn_id="mongo_vitor_ozols",
         mongo_db=MONGO_DB,
         mongo_collection=MONGO_COLLECTION,
@@ -152,4 +154,3 @@ with DAG(
     )
 
     scrape_drogheda_jobs >> fetch_unprocessed >> has_jobs >> build_payload >> send_email >> mark_processed
-

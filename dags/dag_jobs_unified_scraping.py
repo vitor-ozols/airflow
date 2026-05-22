@@ -200,7 +200,6 @@ with DAG(
         mongo_conn_id=MONGO_CONN_ID,
         mongo_db=MONGO_DB,
         mongo_collection=MONGO_COLLECTION,
-        limit=20,
         max_attempts=1,
         fresh_after_days=STALE_AFTER_DAYS,
     )

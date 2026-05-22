@@ -36,7 +36,7 @@ class JobLLMTaggingOperator(BaseOperator):
         mongo_conn_id,
         mongo_db,
         mongo_collection,
-        limit=20,
+        limit=None,
         max_attempts=1,
         model=None,
         max_description_chars=6000,
@@ -67,69 +67,87 @@ class JobLLMTaggingOperator(BaseOperator):
         collection = hook.get_collection(self.mongo_collection, self.mongo_db)
         self._ensure_indexes(collection)
 
-        docs = list(
-            collection
-            .find(self._query_unenriched_jobs())
-            .sort([("first_seen_at", DESCENDING), ("scraped_at", DESCENDING)])
-            .limit(int(self.limit))
-        )
+        job_ids = self._fetch_unenriched_job_ids(collection)
 
-        stats = {"attempted": 0, "enriched": 0, "failed": 0, "skipped": 0}
-        if not docs:
+        stats = {"attempted": 0, "enriched": 0, "failed": 0, "skipped": 0, "found": len(job_ids)}
+        if not job_ids:
             self.log.info("Nenhuma vaga nova sem tags LLM em %s.", self.mongo_collection)
             return stats
 
-        for doc in docs:
-            stats["attempted"] += 1
-            now = datetime.now(timezone.utc)
+        self.log.info("Vagas sem tags LLM encontradas em %s: %s", self.mongo_collection, len(job_ids))
+
+        for job_id in job_ids:
+            doc = collection.find_one({"_id": job_id})
+            if not doc:
+                stats["skipped"] += 1
+                continue
+            if doc.get("llm_tags", {}).get("enriched_at"):
+                stats["skipped"] += 1
+                continue
+
+            self._tag_one_job(collection, doc, agent, model, stats)
+
+        self.log.info("LLM tagging finalizado: %s", json.dumps(stats, ensure_ascii=False))
+        return stats
+
+    def _fetch_unenriched_job_ids(self, collection):
+        cursor = (
+            collection
+            .find(self._query_unenriched_jobs(), {"_id": 1})
+            .sort([("first_seen_at", DESCENDING), ("scraped_at", DESCENDING)])
+        )
+        if self.limit:
+            cursor = cursor.limit(int(self.limit))
+        return [doc["_id"] for doc in cursor]
+
+    def _tag_one_job(self, collection, doc, agent, model, stats):
+        stats["attempted"] += 1
+        now = datetime.now(timezone.utc)
+        collection.update_one(
+            {"_id": doc["_id"]},
+            {
+                "$set": {
+                    "llm_tagging_status": "processing",
+                    "llm_tagging_requested_at": now,
+                    "llm_tagging_model": model,
+                },
+                "$inc": {"llm_tagging_attempts": 1},
+            },
+        )
+
+        try:
+            prompt = build_user_prompt(self._build_job_input(doc))
+            result = agent.run_sync(prompt)
+            output: JobTaggingOutput = result.output
+            payload = output.model_dump(mode="json")
+            payload["enriched_at"] = datetime.now(timezone.utc)
+            payload["model"] = model
+
             collection.update_one(
                 {"_id": doc["_id"]},
                 {
                     "$set": {
-                        "llm_tagging_status": "processing",
-                        "llm_tagging_requested_at": now,
-                        "llm_tagging_model": model,
+                        "llm_tags": payload,
+                        "llm_tagging_status": "completed",
+                        "llm_tagging_completed_at": payload["enriched_at"],
                     },
-                    "$inc": {"llm_tagging_attempts": 1},
+                    "$unset": {"llm_tagging_last_error": ""},
                 },
             )
-
-            try:
-                prompt = build_user_prompt(self._build_job_input(doc))
-                result = agent.run_sync(prompt)
-                output: JobTaggingOutput = result.output
-                payload = output.model_dump(mode="json")
-                payload["enriched_at"] = datetime.now(timezone.utc)
-                payload["model"] = model
-
-                collection.update_one(
-                    {"_id": doc["_id"]},
-                    {
-                        "$set": {
-                            "llm_tags": payload,
-                            "llm_tagging_status": "completed",
-                            "llm_tagging_completed_at": payload["enriched_at"],
-                        },
-                        "$unset": {"llm_tagging_last_error": ""},
-                    },
-                )
-                stats["enriched"] += 1
-            except Exception as exc:
-                self.log.exception("Falha ao gerar tags LLM para vaga url=%s", doc.get("url", ""))
-                collection.update_one(
-                    {"_id": doc["_id"]},
-                    {
-                        "$set": {
-                            "llm_tagging_status": "failed",
-                            "llm_tagging_failed_at": datetime.now(timezone.utc),
-                            "llm_tagging_last_error": str(exc)[:1000],
-                        }
-                    },
-                )
-                stats["failed"] += 1
-
-        self.log.info("LLM tagging finalizado: %s", json.dumps(stats, ensure_ascii=False))
-        return stats
+            stats["enriched"] += 1
+        except Exception as exc:
+            self.log.exception("Falha ao gerar tags LLM para vaga url=%s", doc.get("url", ""))
+            collection.update_one(
+                {"_id": doc["_id"]},
+                {
+                    "$set": {
+                        "llm_tagging_status": "failed",
+                        "llm_tagging_failed_at": datetime.now(timezone.utc),
+                        "llm_tagging_last_error": str(exc)[:1000],
+                    }
+                },
+            )
+            stats["failed"] += 1
 
     def _ensure_indexes(self, collection):
         collection.create_index([("llm_tagging_status", ASCENDING)])
