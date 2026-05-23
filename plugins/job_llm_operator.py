@@ -1,7 +1,9 @@
 import json
 import os
+import math
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib import error, request
 
 from airflow.models import BaseOperator
 from airflow.providers.mongo.hooks.mongo import MongoHook
@@ -264,3 +266,254 @@ class JobStaleCleanupOperator(BaseOperator):
             result.deleted_count,
         )
         return {"matched": matched, "deleted": result.deleted_count, "dry_run": False}
+
+
+class JobGoogleEmbeddingOperator(BaseOperator):
+    template_fields = ("mongo_collection",)
+
+    def __init__(
+        self,
+        mongo_conn_id,
+        mongo_db,
+        mongo_collection,
+        limit=None,
+        max_attempts=1,
+        model=None,
+        output_dimensionality=None,
+        fresh_after_days=None,
+        max_description_chars=12000,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self.mongo_conn_id = mongo_conn_id
+        self.mongo_db = mongo_db
+        self.mongo_collection = mongo_collection
+        self.limit = limit
+        self.max_attempts = max_attempts
+        self.model = model
+        self.output_dimensionality = output_dimensionality
+        self.fresh_after_days = fresh_after_days
+        self.max_description_chars = max_description_chars
+
+    def execute(self, context):
+        load_env_file()
+        api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            raise ValueError("Google API key não configurada. Defina GOOGLE_API_KEY ou GEMINI_API_KEY.")
+        model = self.model or os.getenv("GOOGLE_EMBEDDING_MODEL") or "gemini-embedding-001"
+        output_dimensionality = self.output_dimensionality
+        if output_dimensionality is None:
+            output_dimensionality = int(os.getenv("GOOGLE_EMBEDDING_DIMENSIONALITY", "768"))
+
+        hook = MongoHook(mongo_conn_id=self.mongo_conn_id)
+        collection = hook.get_collection(self.mongo_collection, self.mongo_db)
+        self._ensure_indexes(collection)
+
+        job_ids = self._fetch_jobs_for_embedding(collection)
+        stats = {"attempted": 0, "embedded": 0, "failed": 0, "skipped": 0, "found": len(job_ids)}
+        if not job_ids:
+            self.log.info("Nenhuma vaga pendente de embedding em %s.", self.mongo_collection)
+            return stats
+
+        self.log.info("Vagas pendentes de embedding em %s: %s", self.mongo_collection, len(job_ids))
+
+        for job_id in job_ids:
+            doc = collection.find_one({"_id": job_id})
+            if not doc:
+                stats["skipped"] += 1
+                continue
+
+            embedding_text = self._build_embedding_text(doc)
+            if not embedding_text:
+                stats["skipped"] += 1
+                continue
+
+            self._embed_one_job(collection, doc, api_key, model, output_dimensionality, embedding_text, stats)
+
+        self.log.info("Embeddings finalizados: %s", json.dumps(stats, ensure_ascii=False))
+        return stats
+
+    def _fetch_jobs_for_embedding(self, collection):
+        cursor = (
+            collection
+            .find(self._query_jobs_for_embedding(), {"_id": 1})
+            .sort([("first_seen_at", DESCENDING), ("scraped_at", DESCENDING)])
+        )
+        if self.limit:
+            cursor = cursor.limit(int(self.limit))
+        return [doc["_id"] for doc in cursor]
+
+    def _embed_one_job(self, collection, doc, api_key, model, output_dimensionality, embedding_text, stats):
+        stats["attempted"] += 1
+        now = datetime.now(timezone.utc)
+        collection.update_one(
+            {"_id": doc["_id"]},
+            {
+                "$set": {
+                    "job_embedding_status": "processing",
+                    "job_embedding_requested_at": now,
+                    "job_embedding_model": model,
+                },
+                "$inc": {"job_embedding_attempts": 1},
+            },
+        )
+
+        try:
+            values = self._generate_embedding(
+                api_key=api_key,
+                model=model,
+                output_dimensionality=output_dimensionality,
+                content=embedding_text,
+                title=doc.get("title", ""),
+            )
+            payload = {
+                "values": values,
+                "dimensions": len(values),
+                "model": model,
+                "task_type": "RETRIEVAL_DOCUMENT",
+                "enriched_at": datetime.now(timezone.utc),
+            }
+            collection.update_one(
+                {"_id": doc["_id"]},
+                {
+                    "$set": {
+                        "job_embedding": payload,
+                        "job_embedding_status": "completed",
+                        "job_embedding_completed_at": payload["enriched_at"],
+                    },
+                    "$unset": {"job_embedding_last_error": ""},
+                },
+            )
+            stats["embedded"] += 1
+        except Exception as exc:
+            self.log.exception("Falha ao gerar embedding para vaga url=%s", doc.get("url", ""))
+            collection.update_one(
+                {"_id": doc["_id"]},
+                {
+                    "$set": {
+                        "job_embedding_status": "failed",
+                        "job_embedding_failed_at": datetime.now(timezone.utc),
+                        "job_embedding_last_error": str(exc)[:1000],
+                    }
+                },
+            )
+            stats["failed"] += 1
+
+    def _generate_embedding(self, api_key, model, output_dimensionality, content, title=""):
+        payload = {
+            "task_type": "RETRIEVAL_DOCUMENT",
+            "content": {"parts": [{"text": content}]},
+        }
+        if title:
+            payload["title"] = title[:500]
+        if output_dimensionality:
+            payload["output_dimensionality"] = int(output_dimensionality)
+
+        req = request.Request(
+            url=f"https://generativelanguage.googleapis.com/v1beta/models/{model}:embedContent",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "x-goog-api-key": api_key,
+            },
+            method="POST",
+        )
+
+        try:
+            with request.urlopen(req, timeout=60) as response:
+                raw = response.read().decode("utf-8")
+        except error.HTTPError as exc:
+            raw = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Google embedding request failed with HTTP {exc.code}: {raw[:500]}") from exc
+
+        data = json.loads(raw)
+        embeddings = data.get("embeddings") or ([data["embedding"]] if data.get("embedding") else [])
+        if not embeddings or "values" not in embeddings[0]:
+            raise RuntimeError(f"Resposta inesperada da API de embeddings: {raw[:500]}")
+
+        values = [float(value) for value in embeddings[0]["values"]]
+        if model == "gemini-embedding-001" and output_dimensionality and int(output_dimensionality) != 3072:
+            values = self._normalize_vector(values)
+        return values
+
+    def _normalize_vector(self, values):
+        norm = math.sqrt(sum(value * value for value in values))
+        if norm == 0:
+            return values
+        return [value / norm for value in values]
+
+    def _ensure_indexes(self, collection):
+        collection.create_index([("job_embedding_status", ASCENDING)])
+        collection.create_index([("job_embedding.enriched_at", DESCENDING)])
+        collection.create_index([("first_seen_at", DESCENDING)])
+
+    def _query_jobs_for_embedding(self):
+        query = {
+            "url": {"$exists": True, "$ne": ""},
+            "$and": [
+                {
+                    "$or": [
+                        {"llm_tags.enriched_at": {"$exists": True}},
+                        {"llm_tags": {"$exists": True}},
+                    ]
+                },
+                {
+                    "$or": [
+                        {"job_embedding_attempts": {"$exists": False}},
+                        {"job_embedding_attempts": {"$lt": int(self.max_attempts)}},
+                    ]
+                },
+                {
+                    "$or": [
+                        {"job_embedding.enriched_at": {"$exists": False}},
+                        {"job_embedding_status": {"$exists": False}},
+                        {"job_embedding_status": {"$in": ["pending", "failed"]}},
+                    ]
+                },
+            ],
+        }
+        if self.fresh_after_days is not None:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=int(self.fresh_after_days))
+            query["$and"].append(
+                {
+                    "$or": [
+                        {"last_seen_at": {"$gte": cutoff}},
+                        {
+                            "last_seen_at": {"$exists": False},
+                            "scraped_at": {"$gte": cutoff},
+                        },
+                    ]
+                }
+            )
+        return query
+
+    def _build_embedding_text(self, doc):
+        llm_tags = doc.get("llm_tags") or {}
+        description = (doc.get("description") or "")[: int(self.max_description_chars)]
+        chunks = [
+            f"Title: {doc.get('title', '').strip()}",
+            f"Company: {doc.get('company', '').strip()}",
+            f"Location: {doc.get('location', '').strip()}",
+            f"Source: {doc.get('source', '').strip()}",
+            f"Keyword: {doc.get('keyword', '').strip()}",
+            f"Job type: {doc.get('job_type', '').strip()}",
+            f"Discipline: {doc.get('discipline', '').strip()}",
+            f"Salary: {doc.get('salary', '').strip()}",
+            f"Publication date: {str(doc.get('publication_date', '')).strip()}",
+            f"Posted text: {doc.get('posted_text', '').strip()}",
+            f"LLM summary: {llm_tags.get('summary', '').strip()}",
+            f"Tags: {', '.join(llm_tags.get('tags') or [])}",
+            f"Skills: {', '.join(llm_tags.get('skills') or [])}",
+            f"Tools: {', '.join(llm_tags.get('tools') or [])}",
+            f"Role family: {llm_tags.get('role_family', '').strip()}",
+            f"Seniority: {llm_tags.get('seniority', '').strip()}",
+            f"Work mode: {llm_tags.get('work_mode', '').strip()}",
+            f"Regions: {', '.join(llm_tags.get('regions') or [])}",
+            f"Countries: {', '.join(llm_tags.get('countries') or [])}",
+            f"Cities: {', '.join(llm_tags.get('cities') or [])}",
+            f"Languages: {', '.join(llm_tags.get('languages') or [])}",
+            f"Contract type: {llm_tags.get('contract_type', '').strip()}",
+            f"Description:\n{description.strip()}",
+        ]
+        text = "\n".join(part for part in chunks if not part.endswith(": "))
+        return text.strip()
