@@ -21,6 +21,9 @@ MONGO_DB = "airflow"
 MONGO_COLLECTION = "jobs_unified"
 VOLCANIC_SOURCE_COLLECTION = "volcanic_jobs"
 STALE_AFTER_DAYS = 2
+LINKEDIN_DAYS_BACK = 1
+LLM_TAGGING_LIMIT = 500
+EMBEDDING_LIMIT = 500
 
 
 def create_jobs_unified_indexes():
@@ -37,29 +40,20 @@ def create_jobs_unified_indexes():
     collection.create_index([("job_embedding.enriched_at", DESCENDING)])
 
 
-def sync_volcanic_jobs_to_unified(batch_size=100, max_docs_per_run=5000, fresh_days=STALE_AFTER_DAYS):
+def sync_volcanic_jobs_to_unified(batch_size=100, max_docs_per_run=None):
     hook = MongoHook(mongo_conn_id=MONGO_CONN_ID)
     source_collection = hook.get_collection(VOLCANIC_SOURCE_COLLECTION, MONGO_DB)
     target_collection = hook.get_collection(MONGO_COLLECTION, MONGO_DB)
-    cutoff = datetime.now(timezone.utc) - timedelta(days=int(fresh_days))
 
     cursor = (
         source_collection
         .find(
-            {
-                "url": {"$exists": True, "$ne": ""},
-                "$or": [
-                    {"last_seen_at": {"$gte": cutoff}},
-                    {
-                        "last_seen_at": {"$exists": False},
-                        "scraped_at": {"$gte": cutoff},
-                    },
-                ],
-            }
+            {"url": {"$exists": True, "$ne": ""}}
         )
         .batch_size(int(batch_size))
-        .limit(int(max_docs_per_run))
     )
+    if max_docs_per_run:
+        cursor = cursor.limit(int(max_docs_per_run))
 
     totals = {"inserted": 0, "updated": 0, "matched": 0, "total_synced": 0}
     operations = []
@@ -187,6 +181,7 @@ with DAG(
         timezone="UTC",
     ),
     catchup=False,
+    max_active_runs=1,
     max_active_tasks=2,
     tags=["jobs", "linkedin", "volcanic", "greenhouse", "mongo", "unified"],
 ) as dag:
@@ -209,8 +204,8 @@ with DAG(
         mongo_conn_id=MONGO_CONN_ID,
         mongo_db=MONGO_DB,
         mongo_collection=MONGO_COLLECTION,
+        limit=LLM_TAGGING_LIMIT,
         max_attempts=1,
-        fresh_after_days=STALE_AFTER_DAYS,
     )
 
     embed_relevant_job_content = JobGoogleEmbeddingOperator(
@@ -218,6 +213,7 @@ with DAG(
         mongo_conn_id=MONGO_CONN_ID,
         mongo_db=MONGO_DB,
         mongo_collection=MONGO_COLLECTION,
+        limit=EMBEDDING_LIMIT,
         max_attempts=1,
     )
 
@@ -238,14 +234,13 @@ with DAG(
                 keyword=keyword,
                 location=scope["location"],
                 geo_id=scope["geo_id"],
-                days_back=1,
+                days_back=LINKEDIN_DAYS_BACK,
                 blacklist=LINKEDIN_BLACKLIST_COMPANIES,
                 remote_only=scope["remote_only"],
                 distance=50,
                 fetch_details=True,
                 detail_request_delay=1.0,
                 request_timeout=20,
-                max_pages=1,
                 mongo_conn_id=MONGO_CONN_ID,
                 mongo_db=MONGO_DB,
                 mongo_collection=MONGO_COLLECTION,

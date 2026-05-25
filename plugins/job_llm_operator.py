@@ -1,6 +1,7 @@
 import json
 import os
 import math
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib import error, request
@@ -9,6 +10,9 @@ from airflow.models import BaseOperator
 from airflow.providers.mongo.hooks.mongo import MongoHook
 from ai.agents.job_tagger import JobTaggingInput, JobTaggingOutput, build_user_prompt, get_agent, get_model_from_env
 from pymongo import ASCENDING, DESCENDING
+
+
+PROGRESS_LOG_EVERY = 25
 
 
 def load_env_file() -> None:
@@ -76,27 +80,66 @@ class JobLLMTaggingOperator(BaseOperator):
             self.log.info("Nenhuma vaga nova sem tags LLM em %s.", self.mongo_collection)
             return stats
 
-        self.log.info("Vagas sem tags LLM encontradas em %s: %s", self.mongo_collection, len(job_ids))
+        self.log.info(
+            "LLM tagging iniciado | collection=%s | batch_size=%s | limit=%s | model=%s",
+            self.mongo_collection,
+            len(job_ids),
+            self.limit or "none",
+            model,
+        )
 
-        for job_id in job_ids:
+        started_at = time.monotonic()
+        for index, job_id in enumerate(job_ids, start=1):
             doc = collection.find_one({"_id": job_id})
             if not doc:
                 stats["skipped"] += 1
+                self._log_llm_progress(index, len(job_ids), stats, started_at)
                 continue
             if doc.get("llm_tags", {}).get("enriched_at"):
                 stats["skipped"] += 1
+                self._log_llm_progress(index, len(job_ids), stats, started_at)
                 continue
 
+            self.log.info(
+                "LLM tagging vaga %s/%s | source=%s | company=%s | title=%s | url=%s",
+                index,
+                len(job_ids),
+                doc.get("source", ""),
+                self._short(doc.get("company", "")),
+                self._short(doc.get("title", "")),
+                doc.get("url", ""),
+            )
             self._tag_one_job(collection, doc, agent, model, stats)
+            self._log_llm_progress(index, len(job_ids), stats, started_at)
 
         self.log.info("LLM tagging finalizado: %s", json.dumps(stats, ensure_ascii=False))
         return stats
+
+    def _log_llm_progress(self, index, total, stats, started_at):
+        if index == total or index % PROGRESS_LOG_EVERY == 0:
+            elapsed = max(time.monotonic() - started_at, 0.001)
+            self.log.info(
+                "LLM tagging progresso | processed=%s/%s | enriched=%s | failed=%s | skipped=%s | elapsed_s=%.1f | avg_s_per_item=%.2f",
+                index,
+                total,
+                stats["enriched"],
+                stats["failed"],
+                stats["skipped"],
+                elapsed,
+                elapsed / max(index, 1),
+            )
+
+    def _short(self, value, limit=120):
+        value = str(value or "").strip()
+        if len(value) <= limit:
+            return value
+        return value[: limit - 3] + "..."
 
     def _fetch_unenriched_job_ids(self, collection):
         cursor = (
             collection
             .find(self._query_unenriched_jobs(), {"_id": 1})
-            .sort([("first_seen_at", DESCENDING), ("scraped_at", DESCENDING)])
+            .sort([("last_seen_at", DESCENDING), ("scraped_at", DESCENDING)])
         )
         if self.limit:
             cursor = cursor.limit(int(self.limit))
@@ -155,6 +198,7 @@ class JobLLMTaggingOperator(BaseOperator):
         collection.create_index([("llm_tagging_status", ASCENDING)])
         collection.create_index([("llm_tags.enriched_at", DESCENDING)])
         collection.create_index([("first_seen_at", DESCENDING)])
+        collection.create_index([("last_seen_at", DESCENDING), ("scraped_at", DESCENDING)])
 
     def _query_unenriched_jobs(self):
         query = {
@@ -315,29 +359,70 @@ class JobGoogleEmbeddingOperator(BaseOperator):
             self.log.info("Nenhuma vaga pendente de embedding em %s.", self.mongo_collection)
             return stats
 
-        self.log.info("Vagas pendentes de embedding em %s: %s", self.mongo_collection, len(job_ids))
+        self.log.info(
+            "Embedding iniciado | collection=%s | batch_size=%s | limit=%s | model=%s | dimensions=%s",
+            self.mongo_collection,
+            len(job_ids),
+            self.limit or "none",
+            model,
+            output_dimensionality,
+        )
 
-        for job_id in job_ids:
+        started_at = time.monotonic()
+        for index, job_id in enumerate(job_ids, start=1):
             doc = collection.find_one({"_id": job_id})
             if not doc:
                 stats["skipped"] += 1
+                self._log_embedding_progress(index, len(job_ids), stats, started_at)
                 continue
 
             embedding_text = self._build_embedding_text(doc)
             if not embedding_text:
                 stats["skipped"] += 1
+                self._log_embedding_progress(index, len(job_ids), stats, started_at)
                 continue
 
+            self.log.info(
+                "Embedding vaga %s/%s | source=%s | company=%s | title=%s | chars=%s | url=%s",
+                index,
+                len(job_ids),
+                doc.get("source", ""),
+                self._short(doc.get("company", "")),
+                self._short(doc.get("title", "")),
+                len(embedding_text),
+                doc.get("url", ""),
+            )
             self._embed_one_job(collection, doc, api_key, model, output_dimensionality, embedding_text, stats)
+            self._log_embedding_progress(index, len(job_ids), stats, started_at)
 
         self.log.info("Embeddings finalizados: %s", json.dumps(stats, ensure_ascii=False))
         return stats
+
+    def _log_embedding_progress(self, index, total, stats, started_at):
+        if index == total or index % PROGRESS_LOG_EVERY == 0:
+            elapsed = max(time.monotonic() - started_at, 0.001)
+            self.log.info(
+                "Embedding progresso | processed=%s/%s | embedded=%s | failed=%s | skipped=%s | elapsed_s=%.1f | avg_s_per_item=%.2f",
+                index,
+                total,
+                stats["embedded"],
+                stats["failed"],
+                stats["skipped"],
+                elapsed,
+                elapsed / max(index, 1),
+            )
+
+    def _short(self, value, limit=120):
+        value = str(value or "").strip()
+        if len(value) <= limit:
+            return value
+        return value[: limit - 3] + "..."
 
     def _fetch_jobs_for_embedding(self, collection):
         cursor = (
             collection
             .find(self._query_jobs_for_embedding(), {"_id": 1})
-            .sort([("first_seen_at", DESCENDING), ("scraped_at", DESCENDING)])
+            .sort([("last_seen_at", DESCENDING), ("scraped_at", DESCENDING)])
         )
         if self.limit:
             cursor = cursor.limit(int(self.limit))
@@ -446,6 +531,7 @@ class JobGoogleEmbeddingOperator(BaseOperator):
         collection.create_index([("job_embedding_status", ASCENDING)])
         collection.create_index([("job_embedding.enriched_at", DESCENDING)])
         collection.create_index([("first_seen_at", DESCENDING)])
+        collection.create_index([("last_seen_at", DESCENDING), ("scraped_at", DESCENDING)])
 
     def _query_jobs_for_embedding(self):
         query = {

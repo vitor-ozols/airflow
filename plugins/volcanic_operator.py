@@ -45,12 +45,20 @@ class VolcanicSitemapToMongoOperator(BaseOperator):
 
         sitemap_entries = self._collect_sitemap_entries()
         self.log.info("Sitemap URLs coletadas: %s", len(sitemap_entries))
+        seen_result = self._mark_sitemap_entries_seen(collection, sitemap_entries)
         sitemap_entries = self._filter_entries_to_fetch(collection, sitemap_entries)
         sitemap_entries = self._apply_sitemap_limits(sitemap_entries)
         self.log.info("Sitemap URLs para extrair nesta execução: %s", len(sitemap_entries))
 
         jobs = []
-        totals = {"inserted": 0, "updated": 0, "matched": 0, "total_scraped": 0}
+        totals = {
+            "inserted": 0,
+            "updated": 0,
+            "matched": 0,
+            "total_scraped": 0,
+            "seen_matched": seen_result["matched"],
+            "seen_updated": seen_result["updated"],
+        }
         seen_urls = set()
         for entry in sitemap_entries:
             url = entry["url"]
@@ -81,6 +89,45 @@ class VolcanicSitemapToMongoOperator(BaseOperator):
             return totals
 
         return totals
+
+    def _mark_sitemap_entries_seen(self, collection, entries):
+        if not entries:
+            return {"matched": 0, "updated": 0}
+
+        seen_at = datetime.now(timezone.utc)
+        totals = {"matched": 0, "updated": 0}
+        operations = []
+        for entry in entries:
+            operations.append(
+                UpdateOne(
+                    {"url": entry["url"]},
+                    {
+                        "$set": {
+                            "last_seen_at": seen_at,
+                            "active": True,
+                        }
+                    },
+                    upsert=False,
+                )
+            )
+            if len(operations) >= int(self.flush_batch_size):
+                self._flush_seen_updates(collection, operations, totals)
+
+        self._flush_seen_updates(collection, operations, totals)
+        self.log.info(
+            "Sitemap URLs ainda presentes marcadas como vistas | matched=%s | updated=%s",
+            totals["matched"],
+            totals["updated"],
+        )
+        return totals
+
+    def _flush_seen_updates(self, collection, operations, totals):
+        if not operations:
+            return
+        result = collection.bulk_write(operations, ordered=False)
+        totals["matched"] += result.matched_count
+        totals["updated"] += result.modified_count
+        operations.clear()
 
     def _should_flush_jobs(self, jobs):
         if not self.flush_batch_size:

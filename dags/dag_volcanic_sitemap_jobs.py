@@ -19,6 +19,7 @@ with DAG(
         timezone="UTC",
     ),
     catchup=False,
+    max_active_runs=1,
     max_active_tasks=1,
     tags=["volcanic", "toast", "greenhouse", "jobs", "sitemap", "mongo"],
 ) as dag:
