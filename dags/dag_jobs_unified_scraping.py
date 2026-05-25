@@ -219,7 +219,6 @@ with DAG(
         mongo_db=MONGO_DB,
         mongo_collection=MONGO_COLLECTION,
         max_attempts=1,
-        fresh_after_days=STALE_AFTER_DAYS,
     )
 
     cleanup_stale_jobs = JobStaleCleanupOperator(
