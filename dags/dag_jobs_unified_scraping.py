@@ -5,7 +5,8 @@ from airflow import DAG
 from airflow.providers.mongo.hooks.mongo import MongoHook
 from airflow.providers.standard.operators.python import PythonOperator
 from airflow.timetables.trigger import MultipleCronTriggerTimetable
-from job_llm_operator import JobGoogleEmbeddingOperator, JobLLMTaggingOperator, JobStaleCleanupOperator
+from job_tags import build_job_tags
+from job_llm_operator import JobGoogleEmbeddingOperator, JobStaleCleanupOperator
 from job_sources_config import (
     LINKEDIN_BLACKLIST_COMPANIES,
     LINKEDIN_KEYWORDS,
@@ -22,7 +23,6 @@ MONGO_COLLECTION = "jobs_unified"
 VOLCANIC_SOURCE_COLLECTION = "volcanic_jobs"
 STALE_AFTER_DAYS = 2
 LINKEDIN_DAYS_BACK = 1
-LLM_TAGGING_LIMIT = 500
 EMBEDDING_LIMIT = 500
 
 
@@ -34,6 +34,7 @@ def create_jobs_unified_indexes():
     collection.create_index([("company", ASCENDING), ("title", ASCENDING)])
     collection.create_index([("last_seen_at", DESCENDING)])
     collection.create_index([("active", ASCENDING)])
+    collection.create_index([("tags", ASCENDING)])
     collection.create_index([("llm_tagging_status", ASCENDING)])
     collection.create_index([("llm_tags.enriched_at", DESCENDING)])
     collection.create_index([("job_embedding_status", ASCENDING)])
@@ -96,6 +97,7 @@ def sync_volcanic_jobs_to_unified(batch_size=100, max_docs_per_run=None):
         source_doc["source_collection"] = VOLCANIC_SOURCE_COLLECTION
         source_doc["source_original_id"] = source_original_id
         source_doc["unified_synced_at"] = datetime.now(timezone.utc)
+        source_doc["tags"] = build_job_tags(source_doc)
 
         operations.append(
             UpdateOne(
@@ -122,7 +124,7 @@ def task_slug(value):
     return re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
 
 
-def build_final_report(scraping_task_ids, cleanup_task_id, enrichment_task_id, embedding_task_id, **context):
+def build_final_report(scraping_task_ids, cleanup_task_id, embedding_task_id, **context):
     task_instance = context["ti"]
 
     scraping_totals = {
@@ -143,7 +145,6 @@ def build_final_report(scraping_task_ids, cleanup_task_id, enrichment_task_id, e
         scraping_totals["total_synced"] += int(result.get("total_synced", 0) or 0)
 
     cleanup_result = task_instance.xcom_pull(task_ids=cleanup_task_id) or {}
-    enrichment_result = task_instance.xcom_pull(task_ids=enrichment_task_id) or {}
     embedding_result = task_instance.xcom_pull(task_ids=embedding_task_id) or {}
 
     report = {
@@ -155,12 +156,6 @@ def build_final_report(scraping_task_ids, cleanup_task_id, enrichment_task_id, e
             "matched": int(cleanup_result.get("matched", 0) or 0),
             "deleted": int(cleanup_result.get("deleted", 0) or 0),
             "dry_run": bool(cleanup_result.get("dry_run", False)),
-        },
-        "llm": {
-            "calls_attempted": int(enrichment_result.get("attempted", 0) or 0),
-            "enriched": int(enrichment_result.get("enriched", 0) or 0),
-            "failed": int(enrichment_result.get("failed", 0) or 0),
-            "skipped": int(enrichment_result.get("skipped", 0) or 0),
         },
         "embedding": {
             "calls_attempted": int(embedding_result.get("attempted", 0) or 0),
@@ -198,15 +193,6 @@ with DAG(
     ensure_indexes >> sync_volcanic_jobs
     scraping_done_tasks = [sync_volcanic_jobs]
     scraping_task_ids = [sync_volcanic_jobs.task_id]
-
-    enrich_new_jobs = JobLLMTaggingOperator(
-        task_id="enrich_new_jobs_with_llm_tags",
-        mongo_conn_id=MONGO_CONN_ID,
-        mongo_db=MONGO_DB,
-        mongo_collection=MONGO_COLLECTION,
-        limit=LLM_TAGGING_LIMIT,
-        max_attempts=1,
-    )
 
     embed_relevant_job_content = JobGoogleEmbeddingOperator(
         task_id="embed_relevant_job_content",
@@ -252,7 +238,7 @@ with DAG(
     for task in scraping_done_tasks:
         task >> cleanup_stale_jobs
 
-    cleanup_stale_jobs >> enrich_new_jobs >> embed_relevant_job_content
+    cleanup_stale_jobs >> embed_relevant_job_content
 
     final_report = PythonOperator(
         task_id="jobs_unified_final_report",
@@ -260,7 +246,6 @@ with DAG(
         op_kwargs={
             "scraping_task_ids": scraping_task_ids,
             "cleanup_task_id": cleanup_stale_jobs.task_id,
-            "enrichment_task_id": enrich_new_jobs.task_id,
             "embedding_task_id": embed_relevant_job_content.task_id,
         },
         trigger_rule="all_done",

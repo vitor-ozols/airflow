@@ -11,6 +11,7 @@ from bson import ObjectId
 
 from airflow.models import BaseOperator
 from airflow.providers.mongo.hooks.mongo import MongoHook
+from job_tags import build_job_tags
 
 class LinkedInToMongoOperator(BaseOperator):
     template_fields = ('keyword', 'location', 'days_back')
@@ -366,6 +367,7 @@ class LinkedInToMongoOperator(BaseOperator):
                             if self.detail_request_delay:
                                 time.sleep(float(self.detail_request_delay))
 
+                        job["tags"] = build_job_tags(job)
                         all_jobs.append(job)
 
                 jobs_added = len(all_jobs) - jobs_before_page

@@ -13,6 +13,7 @@ class Job(BaseModel):
     location: Optional[str] = None
     url: HttpUrl
     keyword: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
     timestamp: str
     processed: bool = False
     processed_at: Optional[str] = None
@@ -100,6 +101,7 @@ def build_user_prompt(cv_markdown: str, jobs: List[Job], top_k: int = 20) -> str
 
     Instructions:
     - Return at most {top_k} items in `top_recommendations`, ordered best to worst.
+    - Use `tags` from the job posting as additional matching context when present.
     - Use a 0-100 score with this weighting:
     - Technical stack match: 40%
     - Seniority/role scope match: 5%

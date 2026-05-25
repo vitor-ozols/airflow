@@ -9,6 +9,7 @@ from urllib import error, request
 from airflow.models import BaseOperator
 from airflow.providers.mongo.hooks.mongo import MongoHook
 from ai.agents.job_tagger import JobTaggingInput, JobTaggingOutput, build_user_prompt, get_agent, get_model_from_env
+from job_tags import build_job_tags
 from pymongo import ASCENDING, DESCENDING
 
 
@@ -444,6 +445,10 @@ class JobGoogleEmbeddingOperator(BaseOperator):
         )
 
         try:
+            tags = doc.get("tags")
+            if not isinstance(tags, list):
+                tags = build_job_tags(doc)
+                collection.update_one({"_id": doc["_id"]}, {"$set": {"tags": tags}})
             values = self._generate_embedding(
                 api_key=api_key,
                 model=model,
@@ -539,12 +544,6 @@ class JobGoogleEmbeddingOperator(BaseOperator):
             "$and": [
                 {
                     "$or": [
-                        {"llm_tags.enriched_at": {"$exists": True}},
-                        {"llm_tags": {"$exists": True}},
-                    ]
-                },
-                {
-                    "$or": [
                         {"job_embedding_attempts": {"$exists": False}},
                         {"job_embedding_attempts": {"$lt": int(self.max_attempts)}},
                     ]
@@ -574,7 +573,9 @@ class JobGoogleEmbeddingOperator(BaseOperator):
         return query
 
     def _build_embedding_text(self, doc):
-        llm_tags = doc.get("llm_tags") or {}
+        tags = doc.get("tags")
+        if not isinstance(tags, list):
+            tags = build_job_tags(doc)
         description = (doc.get("description") or "")[: int(self.max_description_chars)]
         chunks = [
             f"Title: {doc.get('title', '').strip()}",
@@ -587,18 +588,7 @@ class JobGoogleEmbeddingOperator(BaseOperator):
             f"Salary: {doc.get('salary', '').strip()}",
             f"Publication date: {str(doc.get('publication_date', '')).strip()}",
             f"Posted text: {doc.get('posted_text', '').strip()}",
-            f"LLM summary: {llm_tags.get('summary', '').strip()}",
-            f"Tags: {', '.join(llm_tags.get('tags') or [])}",
-            f"Skills: {', '.join(llm_tags.get('skills') or [])}",
-            f"Tools: {', '.join(llm_tags.get('tools') or [])}",
-            f"Role family: {llm_tags.get('role_family', '').strip()}",
-            f"Seniority: {llm_tags.get('seniority', '').strip()}",
-            f"Work mode: {llm_tags.get('work_mode', '').strip()}",
-            f"Regions: {', '.join(llm_tags.get('regions') or [])}",
-            f"Countries: {', '.join(llm_tags.get('countries') or [])}",
-            f"Cities: {', '.join(llm_tags.get('cities') or [])}",
-            f"Languages: {', '.join(llm_tags.get('languages') or [])}",
-            f"Contract type: {llm_tags.get('contract_type', '').strip()}",
+            f"Tags: {', '.join(tags or [])}",
             f"Description:\n{description.strip()}",
         ]
         text = "\n".join(part for part in chunks if not part.endswith(": "))
