@@ -6,7 +6,7 @@ from airflow.providers.mongo.hooks.mongo import MongoHook
 from airflow.providers.standard.operators.python import PythonOperator
 from airflow.timetables.trigger import MultipleCronTriggerTimetable
 from job_tags import build_job_tags
-from job_llm_operator import JobGoogleEmbeddingOperator, JobStaleCleanupOperator
+from job_llm_operator import JobStaleCleanupOperator
 from job_sources_config import (
     LINKEDIN_BLACKLIST_COMPANIES,
     LINKEDIN_KEYWORDS,
@@ -24,7 +24,6 @@ REPORT_COLLECTION = "jobs_unified_scraping_reports"
 VOLCANIC_SOURCE_COLLECTION = "volcanic_jobs"
 STALE_AFTER_DAYS = 2
 LINKEDIN_DAYS_BACK = 1
-EMBEDDING_LIMIT = 500
 
 
 def create_jobs_unified_indexes():
@@ -131,7 +130,7 @@ def task_slug(value):
     return re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
 
 
-def build_final_report(scraping_task_ids, cleanup_task_id, embedding_task_id, **context):
+def build_final_report(scraping_task_ids, cleanup_task_id, **context):
     task_instance = context["ti"]
 
     scraping_totals = {
@@ -152,7 +151,6 @@ def build_final_report(scraping_task_ids, cleanup_task_id, embedding_task_id, **
         scraping_totals["total_synced"] += int(result.get("total_synced", 0) or 0)
 
     cleanup_result = task_instance.xcom_pull(task_ids=cleanup_task_id) or {}
-    embedding_result = task_instance.xcom_pull(task_ids=embedding_task_id) or {}
 
     report = {
         "scraping": {
@@ -165,10 +163,11 @@ def build_final_report(scraping_task_ids, cleanup_task_id, embedding_task_id, **
             "dry_run": bool(cleanup_result.get("dry_run", False)),
         },
         "embedding": {
-            "calls_attempted": int(embedding_result.get("attempted", 0) or 0),
-            "embedded": int(embedding_result.get("embedded", 0) or 0),
-            "failed": int(embedding_result.get("failed", 0) or 0),
-            "skipped": int(embedding_result.get("skipped", 0) or 0),
+            "enabled": False,
+            "calls_attempted": 0,
+            "embedded": 0,
+            "failed": 0,
+            "skipped": 0,
         },
     }
     hook = MongoHook(mongo_conn_id=MONGO_CONN_ID)
@@ -219,15 +218,6 @@ with DAG(
     scraping_done_tasks = [sync_volcanic_jobs]
     scraping_task_ids = [sync_volcanic_jobs.task_id]
 
-    embed_relevant_job_content = JobGoogleEmbeddingOperator(
-        task_id="embed_relevant_job_content",
-        mongo_conn_id=MONGO_CONN_ID,
-        mongo_db=MONGO_DB,
-        mongo_collection=MONGO_COLLECTION,
-        limit=EMBEDDING_LIMIT,
-        max_attempts=1,
-    )
-
     cleanup_stale_jobs = JobStaleCleanupOperator(
         task_id="cleanup_stale_jobs",
         mongo_conn_id=MONGO_CONN_ID,
@@ -263,17 +253,14 @@ with DAG(
     for task in scraping_done_tasks:
         task >> cleanup_stale_jobs
 
-    cleanup_stale_jobs >> embed_relevant_job_content
-
     final_report = PythonOperator(
         task_id="jobs_unified_final_report",
         python_callable=build_final_report,
         op_kwargs={
             "scraping_task_ids": scraping_task_ids,
             "cleanup_task_id": cleanup_stale_jobs.task_id,
-            "embedding_task_id": embed_relevant_job_content.task_id,
         },
         trigger_rule="all_done",
     )
 
-    embed_relevant_job_content >> final_report
+    cleanup_stale_jobs >> final_report
