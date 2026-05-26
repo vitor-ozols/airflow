@@ -14,12 +14,13 @@ from job_sources_config import (
 )
 from linkedin_operator import LinkedInToMongoOperator
 from pymongo import ASCENDING, DESCENDING, UpdateOne
-from pymongo.errors import BulkWriteError
+from pymongo.errors import BulkWriteError, PyMongoError
 
 
 MONGO_CONN_ID = "mongo_vitor_ozols"
 MONGO_DB = "airflow"
 MONGO_COLLECTION = "jobs_unified"
+REPORT_COLLECTION = "jobs_unified_scraping_reports"
 VOLCANIC_SOURCE_COLLECTION = "volcanic_jobs"
 STALE_AFTER_DAYS = 2
 LINKEDIN_DAYS_BACK = 1
@@ -90,33 +91,39 @@ def sync_volcanic_jobs_to_unified(batch_size=100, max_docs_per_run=None):
         totals["total_synced"] += len(operations)
         operations.clear()
 
-    for source_doc in cursor:
-        source_original_id = str(source_doc.pop("_id", ""))
-        source_doc.pop("processed", None)
-        source_doc.pop("processed_at", None)
-        source_doc["source_collection"] = VOLCANIC_SOURCE_COLLECTION
-        source_doc["source_original_id"] = source_original_id
-        source_doc["unified_synced_at"] = datetime.now(timezone.utc)
-        source_doc["tags"] = build_job_tags(source_doc)
+    try:
+        for source_doc in cursor:
+            source_original_id = str(source_doc.pop("_id", ""))
+            source_doc.pop("processed", None)
+            source_doc.pop("processed_at", None)
+            source_doc["source_collection"] = VOLCANIC_SOURCE_COLLECTION
+            source_doc["source_original_id"] = source_original_id
+            source_doc["unified_synced_at"] = datetime.now(timezone.utc)
+            source_doc["tags"] = build_job_tags(source_doc)
 
-        operations.append(
-            UpdateOne(
-                {"url": source_doc["url"]},
-                {
-                    "$set": source_doc,
-                    "$setOnInsert": {
-                        "processed": False,
-                        "processed_at": "",
+            operations.append(
+                UpdateOne(
+                    {"url": source_doc["url"]},
+                    {
+                        "$set": source_doc,
+                        "$setOnInsert": {
+                            "processed": False,
+                            "processed_at": "",
+                        },
                     },
-                },
-                upsert=True,
+                    upsert=True,
+                )
             )
-        )
 
-        if len(operations) >= int(batch_size):
-            flush_operations()
+            if len(operations) >= int(batch_size):
+                flush_operations()
 
-    flush_operations()
+        flush_operations()
+    except PyMongoError as error:
+        totals["sync_failed"] = True
+        totals["sync_error"] = str(error)[:1000]
+        print(f"sync_volcanic_jobs_to_unified Mongo error: {totals['sync_error']}")
+        return totals
     return totals
 
 
@@ -164,6 +171,24 @@ def build_final_report(scraping_task_ids, cleanup_task_id, embedding_task_id, **
             "skipped": int(embedding_result.get("skipped", 0) or 0),
         },
     }
+    hook = MongoHook(mongo_conn_id=MONGO_CONN_ID)
+    reports_collection = hook.get_collection(REPORT_COLLECTION, MONGO_DB)
+    reports_collection.create_index([("dag_id", ASCENDING), ("run_id", ASCENDING)], unique=True)
+    reports_collection.create_index([("inserted_at", DESCENDING)])
+    report_doc = {
+        "dag_id": context["dag"].dag_id,
+        "task_id": task_instance.task_id,
+        "run_id": context["run_id"],
+        "logical_date": context.get("logical_date"),
+        "inserted_at": datetime.now(timezone.utc),
+        "source": "airflow_task",
+        "report": report,
+    }
+    reports_collection.update_one(
+        {"dag_id": report_doc["dag_id"], "run_id": report_doc["run_id"]},
+        {"$set": report_doc},
+        upsert=True,
+    )
     print(f"jobs_unified final report: {report}")
     return report
 
@@ -172,7 +197,7 @@ with DAG(
     dag_id="jobs_unified_scraping",
     start_date=datetime(2024, 1, 1),
     schedule=MultipleCronTriggerTimetable(
-        "25 8,12,16,20 * * *",
+        "25 8-20 * * *",
         timezone="UTC",
     ),
     catchup=False,

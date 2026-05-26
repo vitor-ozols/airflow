@@ -253,6 +253,7 @@ class LinkedInToMongoOperator(BaseOperator):
     def execute(self, context):
         hook = MongoHook(mongo_conn_id=self.mongo_conn_id)
         all_jobs = []
+        pagination_errors = []
         seen_urls = set()
         search_label = self.keyword or "ALL_JOBS"
         
@@ -384,11 +385,25 @@ class LinkedInToMongoOperator(BaseOperator):
                     break
                 time.sleep(2)
 
-            except Exception as e:
+            except requests.RequestException as e:
                 formatted_error = self._format_for_log(str(e))
                 if formatted_error and formatted_error != str(e):
                     self.log.error("Detalhe do erro formatado:\n%s", formatted_error)
 
+                self.log.exception(
+                    "Erro de rede na paginação para keyword=%s, start=%s. Encerrando fonte sem falhar a task.",
+                    search_label,
+                    start,
+                )
+                pagination_errors.append(
+                    {
+                        "start": start,
+                        "error_type": type(e).__name__,
+                        "error": str(e)[:1000],
+                    }
+                )
+                break
+            except Exception:
                 self.log.exception(
                     "Erro na paginação para keyword=%s, start=%s",
                     search_label,
@@ -399,7 +414,13 @@ class LinkedInToMongoOperator(BaseOperator):
         self.log.info("LinkedIn scraping finalizado | keyword=%s | total_vagas=%s", search_label, len(all_jobs))
         if not all_jobs:
             self.log.info("Nenhuma vaga coletada para inserir no MongoDB.")
-            return {"inserted": 0, "updated": 0, "matched": 0, "total_scraped": 0}
+            return {
+                "inserted": 0,
+                "updated": 0,
+                "matched": 0,
+                "total_scraped": 0,
+                "pagination_errors": pagination_errors,
+            }
 
         try:
             collection = hook.get_collection(self.mongo_collection, self.mongo_db)
@@ -439,6 +460,7 @@ class LinkedInToMongoOperator(BaseOperator):
                 "updated": result.modified_count,
                 "matched": result.matched_count,
                 "total_scraped": len(all_jobs),
+                "pagination_errors": pagination_errors,
             }
         except Exception:
             self.log.exception(

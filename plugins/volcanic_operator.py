@@ -335,7 +335,8 @@ class VolcanicSitemapToMongoOperator(BaseOperator):
             "description_html": description_html,
             "location": self._field(table_fields, "location") or self._json_ld_location(json_ld),
             "discipline": self._field(table_fields, "discipline", "external posting category", "category"),
-            "job_type": self._field(table_fields, "job type", "employment type") or json_ld.get("employmentType", ""),
+            "job_type": self._field(table_fields, "job type", "employment type")
+            or self._clean_text(json_ld.get("employmentType", "")),
             "salary": self._field(table_fields, "salary"),
             "contact_name": self._field(table_fields, "contact name"),
             "contact_email": self._field(table_fields, "contact email"),
@@ -372,8 +373,8 @@ class VolcanicSitemapToMongoOperator(BaseOperator):
             "description_html": description_html,
             "location": self._greenhouse_location(greenhouse_job),
             "discipline": self._greenhouse_department(greenhouse_job),
-            "job_type": metadata_fields.get("Employment Type", ""),
-            "salary": metadata_fields.get("Salary", ""),
+            "job_type": self._clean_text(metadata_fields.get("Employment Type", "")),
+            "salary": self._clean_text(metadata_fields.get("Salary", "")),
             "contact_name": "",
             "contact_email": "",
             "job_ref": str(greenhouse_job.get("requisition_id") or greenhouse_job.get("id") or ""),
@@ -594,7 +595,7 @@ class VolcanicSitemapToMongoOperator(BaseOperator):
         for name in names:
             value = fields.get(name)
             if value:
-                return value
+                return self._clean_text(value)
         return ""
 
     def _first_text(self, selector, css_paths):
@@ -626,9 +627,14 @@ class VolcanicSitemapToMongoOperator(BaseOperator):
     def _clean_text(self, value):
         if not value:
             return ""
-        return re.sub(r"\s+", " ", value.replace("\xa0", " ")).strip()
+        if isinstance(value, list):
+            return ", ".join(part for part in (self._clean_text(item) for item in value) if part)
+        if isinstance(value, dict):
+            value = json.dumps(value, ensure_ascii=False, default=str)
+        return re.sub(r"\s+", " ", str(value).replace("\xa0", " ")).strip()
 
     def _parse_datetime(self, value):
+        value = self._clean_text(value)
         if not value:
             return None
         relative = self._parse_relative_datetime(value)
