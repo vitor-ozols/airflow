@@ -1,60 +1,28 @@
-from airflow import DAG
 from datetime import datetime, timezone
-from airflow.providers.standard.operators.python import PythonOperator, ShortCircuitOperator
-from airflow.models.xcom_arg import XComArg
-from airflow.models import Variable
-from airflow.timetables.trigger import MultipleCronTriggerTimetable
-
-from linkedin_operator import (
-    LinkedInFetchUnprocessedOperator,
-    LinkedInMarkProcessedOperator,
-)
-from ai.agents.job_matcher import Job, get_agent, build_user_prompt, AgentOutput
+from email.message import EmailMessage
 from pathlib import Path
 import os
 import smtplib
-from email.message import EmailMessage
+
+from airflow import DAG
+from airflow.models.xcom_arg import XComArg
+from airflow.providers.mongo.hooks.mongo import MongoHook
+from airflow.providers.standard.operators.python import PythonOperator, ShortCircuitOperator
+from airflow.timetables.trigger import MultipleCronTriggerTimetable
+from pymongo import ASCENDING
+
+from job_llm_operator import ResumeTagMatchOperator
+from job_tags import build_job_tags
+
 
 TO_EMAIL = "ozolsvoz@gmail.com"
+MONGO_CONN_ID = "mongo_vitor_ozols"
 MONGO_DB = "airflow"
-MONGO_COLLECTION = "jobs_unified"
-
-KEYWORDS = [
-    "Airflow",
-    "Python",
-    "Data Engineering",
-    "RPA",
-    "Scraping",
-    "IT",
-    "IT Support",
-]
-
-def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-
-
-def build_email_html(out: AgentOutput) -> str:
-
-    items = []
-    for r in out.top_recommendations:
-        gaps = "".join([f"<li>{g}</li>" for g in r.gaps]) if r.gaps else "<li>No meaningful gaps.</li>"
-        items.append(f"""
-        <div style="margin-bottom:16px;padding:12px;border:1px solid #ddd;border-radius:10px;">
-          <div style="font-size:16px;font-weight:700;">{r.title} — {r.company} (Score: {r.score:.1f}/100)</div>
-          <div style="margin-top:6px;">📍 {r.location or "—"} | 🔗 <a href="{r.url}">{r.url}</a></div>
-          <div style="margin-top:8px;"><b>Why it fits:</b> {r.reason}</div>
-          <div style="margin-top:8px;"><b>Gaps / CV tweaks:</b><ul>{gaps}</ul></div>
-        </div>
-        """)
-    return f"""
-    <html>
-      <body style="font-family:Arial,sans-serif;">
-        <h2>Job recommendations</h2>
-        <p>{out.summary}</p>
-        {''.join(items) if items else "<p>No recommended jobs right now.</p>"}
-      </body>
-    </html>
-    """
+JOBS_COLLECTION = "jobs_unified"
+PROFILE_COLLECTION = "job_search_profiles"
+PROFILE_ID = "vitor_ozols_cv"
+RESUME_PATH = str(Path(__file__).resolve().parents[1] / "plugins/ai/agents/CV.md")
+TOP_K = 10
 
 
 def load_env_file() -> None:
@@ -76,33 +44,99 @@ def load_env_file() -> None:
         return
 
 
-def run_agent(jobs_docs: list[dict]) -> dict:
-    if not jobs_docs:
-        return AgentOutput(top_recommendations=[], discard_ids=[], summary="No new jobs.").model_dump(mode="json")
-    load_env_file()
-    cv_path = Path("/opt/airflow/plugins/ai/agents/CV.md")
-    cv_markdown = cv_path.read_text(encoding="utf-8")
+def ensure_resume_tags() -> dict:
+    resume_path = Path(RESUME_PATH)
+    if not resume_path.exists():
+        raise FileNotFoundError(f"CV não encontrado em {resume_path}")
 
-    jobs = [Job.model_validate(d) for d in jobs_docs]
+    cv_markdown = resume_path.read_text(encoding="utf-8").strip()
+    if not cv_markdown:
+        raise ValueError(f"CV vazio em {resume_path}")
 
-    prompt = build_user_prompt(cv_markdown=cv_markdown, jobs=jobs, top_k=8)
+    cv_tags = build_job_tags({"description": cv_markdown})
+    now = datetime.now(timezone.utc)
 
-    result = get_agent().run_sync(prompt)
-    out: AgentOutput = result.output
-    return out.model_dump(mode="json")
+    hook = MongoHook(mongo_conn_id=MONGO_CONN_ID)
+    collection = hook.get_collection(PROFILE_COLLECTION, MONGO_DB)
+    collection.create_index([("profile_type", ASCENDING)])
+    collection.create_index([("cv_tags", ASCENDING)])
+    collection.update_one(
+        {"_id": PROFILE_ID},
+        {
+            "$set": {
+                "profile_type": "resume",
+                "cv_markdown": cv_markdown,
+                "cv_tags": cv_tags,
+                "updated_at": now,
+            },
+            "$setOnInsert": {"created_at": now},
+        },
+        upsert=True,
+    )
+    return {
+        "profile_id": PROFILE_ID,
+        "cv_tags": cv_tags,
+        "tag_count": len(cv_tags),
+    }
 
-def has_jobs_to_process(jobs_docs: list[dict]) -> bool:
-    return bool(jobs_docs)
+
+def has_matches_to_send(tag_output: dict) -> bool:
+    tag_matches = tag_output.get("matches") or []
+    tag_changed = bool(tag_output.get("changed"))
+    return bool(tag_matches) and tag_changed
 
 
-def build_email_payload(out_dict: dict) -> dict:
-    out = AgentOutput.model_validate(out_dict)
+def build_tag_matches_html(matches: list[dict], cv_tags: list[str]) -> str:
+    items = []
+    for index, match in enumerate(matches, start=1):
+        last_seen = match.get("last_seen_at") or match.get("scraped_at") or "Unknown"
+        matched_tags = ", ".join(match.get("matched_tags") or []) or "No matched tags"
+        all_tags = ", ".join(match.get("tags") or []) or "No tags"
+        items.append(
+            f"""
+            <div style="margin-bottom:16px;padding:12px;border:1px solid #ddd;border-radius:10px;">
+              <div style="font-size:16px;font-weight:700;">#{index} {match.get('title', 'Untitled')} — {match.get('company', 'Unknown company')}</div>
+              <div style="margin-top:6px;">Tags em comum: {match.get('matched_tag_count', 0)} | Fonte: {match.get('source') or '—'} | Keyword: {match.get('keyword') or '—'}</div>
+              <div style="margin-top:6px;">📍 {match.get('location') or '—'} | Tipo: {match.get('job_type') or '—'} | Postado: {match.get('posted_text') or '—'}</div>
+              <div style="margin-top:6px;">🕒 Last seen: {last_seen}</div>
+              <div style="margin-top:6px;">🎯 Matched tags: {matched_tags}</div>
+              <div style="margin-top:6px;">🏷️ Job tags: {all_tags}</div>
+              <div style="margin-top:6px;">🔗 <a href="{match.get('url', '#')}">{match.get('url', '#')}</a></div>
+            </div>
+            """
+        )
+    cv_tags_label = ", ".join(cv_tags or []) or "No CV tags"
+    return f"""
+    <h2>CV tag matches</h2>
+    <p>Tags extraidas do CV: {cv_tags_label}</p>
+    <p>Top {len(matches)} vagas ranqueadas por intersecao de tags entre seu CV e as tags cadastradas no MongoDB.</p>
+    {''.join(items) if items else "<p>No tag matches right now.</p>"}
+    """
 
-    to_email = TO_EMAIL
-    subject = f"Job recommendations — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
-    html = build_email_html(out)
 
-    return {"to": to_email, "subject": subject, "html": html, "has_recs": bool(out.top_recommendations)}
+def build_email_html(tag_matches: list[dict], cv_tags: list[str]) -> str:
+    return f"""
+    <html>
+      <body style="font-family:Arial,sans-serif;">
+        {build_tag_matches_html(tag_matches, cv_tags)}
+      </body>
+    </html>
+    """
+
+
+def build_email_payload(tag_output: dict) -> dict:
+    tag_matches = tag_output.get("matches") or []
+    cv_tags = tag_output.get("cv_tags") or []
+    html = build_email_html(tag_matches, cv_tags)
+    subject = f"CV job tag matches — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
+    return {
+        "to": TO_EMAIL,
+        "subject": subject,
+        "html": html,
+        "tag_match_count": len(tag_matches),
+        "cv_tags": cv_tags,
+    }
+
 
 def send_email_smtp(payload: dict) -> None:
     load_env_file()
@@ -117,7 +151,10 @@ def send_email_smtp(payload: dict) -> None:
     msg["From"] = smtp_user
     msg["To"] = payload["to"]
     msg["Subject"] = payload["subject"]
-    msg.set_content("Seu cliente de e-mail não suporta HTML.")
+    msg.set_content(
+        f"Tag matches: {payload.get('tag_match_count', 0)}. "
+        f"CV tags: {', '.join(payload.get('cv_tags') or [])}."
+    )
     msg.add_alternative(payload["html"], subtype="html")
 
     with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
@@ -127,7 +164,7 @@ def send_email_smtp(payload: dict) -> None:
 
 
 with DAG(
-    dag_id='linkedin_processing_pipeline',
+    dag_id="linkedin_processing_pipeline",
     start_date=datetime(2024, 1, 1),
     schedule=MultipleCronTriggerTimetable(
         "15,45 8-19 * * *",
@@ -136,47 +173,46 @@ with DAG(
     ),
     catchup=False,
     max_active_tasks=1,
-    tags=['linkedin', 'processing'],
+    max_active_runs=1,
+    tags=["linkedin", "processing", "tag-match", "resume"],
 ) as dag:
+    ensure_resume_tags_task = PythonOperator(
+        task_id="ensure_resume_tags",
+        python_callable=ensure_resume_tags,
+    )
 
-    fetch_unprocessed = LinkedInFetchUnprocessedOperator(
-        task_id='fetch_unprocessed',
-        mongo_conn_id='mongo_vitor_ozols',
+    find_best_tag_matches = ResumeTagMatchOperator(
+        task_id="find_best_tag_matches",
+        mongo_conn_id=MONGO_CONN_ID,
         mongo_db=MONGO_DB,
-        mongo_collection=MONGO_COLLECTION,
-        limit=50,
+        jobs_collection=JOBS_COLLECTION,
+        profile_collection=PROFILE_COLLECTION,
+        profile_id=PROFILE_ID,
+        limit=TOP_K,
+        recent_days=30,
+        only_active=True,
     )
 
-    has_jobs = ShortCircuitOperator(
-        task_id='has_jobs_to_process',
-        python_callable=has_jobs_to_process,
-        op_kwargs={'jobs_docs': XComArg(fetch_unprocessed)},
-    )
-
-    analyze_jobs = PythonOperator(
-        task_id='analyze_jobs',
-        python_callable=run_agent,
-        op_kwargs={'jobs_docs': XComArg(fetch_unprocessed)},
+    has_matches = ShortCircuitOperator(
+        task_id="has_matches_to_send",
+        python_callable=has_matches_to_send,
+        op_kwargs={
+            "tag_output": XComArg(find_best_tag_matches),
+        },
     )
 
     build_payload = PythonOperator(
-        task_id='build_email_payload',
+        task_id="build_email_payload",
         python_callable=build_email_payload,
-        op_kwargs={'out_dict': XComArg(analyze_jobs)},
+        op_kwargs={
+            "tag_output": XComArg(find_best_tag_matches),
+        },
     )
 
     send_email = PythonOperator(
         task_id="send_recommendations_email",
         python_callable=send_email_smtp,
-        op_kwargs={'payload': XComArg(build_payload)},
+        op_kwargs={"payload": XComArg(build_payload)},
     )
 
-    mark_processed = LinkedInMarkProcessedOperator(
-        task_id='mark_processed',
-        mongo_conn_id='mongo_vitor_ozols',
-        mongo_db=MONGO_DB,
-        mongo_collection=MONGO_COLLECTION,
-        ids=XComArg(fetch_unprocessed),
-    )
-
-    fetch_unprocessed >> has_jobs >> analyze_jobs >> build_payload >> send_email >> mark_processed
+    ensure_resume_tags_task >> find_best_tag_matches >> has_matches >> build_payload >> send_email
