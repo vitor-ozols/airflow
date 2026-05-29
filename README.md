@@ -36,6 +36,30 @@ make ps     # status dos containers
 make clean  # derruba e remove volumes
 ```
 
+## Manutenção
+
+Se o Docker falhar com `failed to register layer ... file exists`, copie o SHA do final do caminho `layerdb/sha256/<SHA>` e rode:
+
+```bash
+make repair-layer LAYER=<SHA>
+make up
+```
+
+Se também houver erro de cache do BuildKit, use:
+
+```bash
+make repair-layer-prune LAYER=<SHA>
+make up
+```
+
+Esses comandos movem os layers afetados para uma quarentena ao lado do diretório de dados do Docker; nada é apagado diretamente.
+
+Para começar com banco limpo:
+
+```bash
+make reset-db
+```
+
 ## Dependências Python (Poetry)
 
 Edite o arquivo `pyproject.toml` e adicione os pacotes em `[tool.poetry.dependencies]`.

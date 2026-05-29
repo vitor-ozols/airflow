@@ -5,4 +5,5 @@ COPY pyproject.toml /opt/airflow/pyproject.toml
 COPY poetry.lock /opt/airflow/poetry.lock
 RUN pip install --no-cache-dir poetry \
     && poetry config virtualenvs.create false \
+    && poetry config installer.parallel false \
     && poetry install --no-interaction --no-ansi --no-root --only main
