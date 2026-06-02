@@ -1,10 +1,11 @@
 import json
 import os
-import subprocess
+import sys
 from pathlib import Path
 from urllib.parse import parse_qsl, urlparse
 
-from sqlalchemy import create_engine, text
+from airflow.models.connection import Connection
+from airflow.utils.session import create_session
 
 
 CONN_ID = "mongo_vitor_ozols"
@@ -34,33 +35,27 @@ def _build_connection_settings() -> tuple[str, str, str]:
     return parsed.hostname, schema, extra_json
 
 
-def _delete_existing_connection(conn_id: str) -> None:
-    engine = create_engine(os.environ["AIRFLOW__DATABASE__SQL_ALCHEMY_CONN"])
-    with engine.begin() as conn:
-        conn.execute(text("DELETE FROM connection WHERE conn_id = :conn_id"), {"conn_id": conn_id})
+def _upsert_connection(conn_id: str, host: str, schema: str, extra_json: str) -> None:
+    with create_session() as session:
+        session.query(Connection).filter(Connection.conn_id == conn_id).delete(synchronize_session=False)
+        session.add(
+            Connection(
+                conn_id=conn_id,
+                conn_type="mongo",
+                host=host,
+                schema=schema,
+                extra=extra_json,
+            )
+        )
 
 
 def main() -> None:
     host, schema, extra_json = _build_connection_settings()
-    _delete_existing_connection(CONN_ID)
-    subprocess.run(
-        [
-            "airflow",
-            "connections",
-            "add",
-            CONN_ID,
-            "--conn-type",
-            "mongo",
-            "--conn-host",
-            host,
-            "--conn-schema",
-            schema,
-            "--conn-extra",
-            extra_json,
-        ],
-        check=True,
-    )
+    _upsert_connection(CONN_ID, host, schema, extra_json)
 
 
 if __name__ == "__main__":
     main()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)
