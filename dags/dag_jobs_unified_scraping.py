@@ -1,27 +1,26 @@
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from airflow import DAG
 from airflow.providers.mongo.hooks.mongo import MongoHook
 from airflow.providers.standard.operators.python import PythonOperator
 from airflow.timetables.trigger import MultipleCronTriggerTimetable
-from job_tags import build_job_tags
 from job_llm_operator import JobStaleCleanupOperator
 from job_sources_config import (
     LINKEDIN_BLACKLIST_COMPANIES,
     LINKEDIN_KEYWORDS,
     LINKEDIN_SEARCH_SCOPES,
+    VOLCANIC_SITEMAP_URLS,
 )
 from linkedin_operator import LinkedInToMongoOperator
-from pymongo import ASCENDING, DESCENDING, UpdateOne
-from pymongo.errors import BulkWriteError, PyMongoError
+from pymongo import ASCENDING, DESCENDING
+from volcanic_operator import VolcanicSitemapToMongoOperator
 
 
 MONGO_CONN_ID = "mongo_vitor_ozols"
 MONGO_DB = "airflow"
 MONGO_COLLECTION = "jobs_unified"
 REPORT_COLLECTION = "jobs_unified_scraping_reports"
-VOLCANIC_SOURCE_COLLECTION = "volcanic_jobs"
 STALE_AFTER_DAYS = 2
 LINKEDIN_DAYS_BACK = 1
 
@@ -39,91 +38,6 @@ def create_jobs_unified_indexes():
     collection.create_index([("llm_tags.enriched_at", DESCENDING)])
     collection.create_index([("job_embedding_status", ASCENDING)])
     collection.create_index([("job_embedding.enriched_at", DESCENDING)])
-
-
-def sync_volcanic_jobs_to_unified(batch_size=100, max_docs_per_run=None):
-    hook = MongoHook(mongo_conn_id=MONGO_CONN_ID)
-    source_collection = hook.get_collection(VOLCANIC_SOURCE_COLLECTION, MONGO_DB)
-    target_collection = hook.get_collection(MONGO_COLLECTION, MONGO_DB)
-
-    cursor = (
-        source_collection
-        .find(
-            {"url": {"$exists": True, "$ne": ""}}
-        )
-        .batch_size(int(batch_size))
-    )
-    if max_docs_per_run:
-        cursor = cursor.limit(int(max_docs_per_run))
-
-    totals = {"inserted": 0, "updated": 0, "matched": 0, "total_synced": 0}
-    operations = []
-
-    def flush_operations():
-        if not operations:
-            return
-
-        try:
-            result = target_collection.bulk_write(operations, ordered=False)
-        except BulkWriteError as error:
-            details = error.details or {}
-            write_errors = details.get("writeErrors", [])
-            sample_errors = []
-            for write_error in write_errors[:5]:
-                operation = write_error.get("op", {})
-                sample_errors.append(
-                    {
-                        "index": write_error.get("index"),
-                        "code": write_error.get("code"),
-                        "errmsg": write_error.get("errmsg"),
-                        "url": (operation.get("q") or {}).get("url"),
-                    }
-                )
-            raise RuntimeError(
-                "Mongo bulk write failed while syncing volcanic jobs to unified "
-                f"collection. batch_size={len(operations)} errors={sample_errors}"
-            ) from None
-
-        totals["inserted"] += result.upserted_count
-        totals["updated"] += result.modified_count
-        totals["matched"] += result.matched_count
-        totals["total_synced"] += len(operations)
-        operations.clear()
-
-    try:
-        for source_doc in cursor:
-            source_original_id = str(source_doc.pop("_id", ""))
-            source_doc.pop("processed", None)
-            source_doc.pop("processed_at", None)
-            source_doc["source_collection"] = VOLCANIC_SOURCE_COLLECTION
-            source_doc["source_original_id"] = source_original_id
-            source_doc["unified_synced_at"] = datetime.now(timezone.utc)
-            source_doc["tags"] = build_job_tags(source_doc)
-
-            operations.append(
-                UpdateOne(
-                    {"url": source_doc["url"]},
-                    {
-                        "$set": source_doc,
-                        "$setOnInsert": {
-                            "processed": False,
-                            "processed_at": "",
-                        },
-                    },
-                    upsert=True,
-                )
-            )
-
-            if len(operations) >= int(batch_size):
-                flush_operations()
-
-        flush_operations()
-    except PyMongoError as error:
-        totals["sync_failed"] = True
-        totals["sync_error"] = str(error)[:1000]
-        print(f"sync_volcanic_jobs_to_unified Mongo error: {totals['sync_error']}")
-        return totals
-    return totals
 
 
 def task_slug(value):
@@ -209,14 +123,19 @@ with DAG(
         python_callable=create_jobs_unified_indexes,
     )
 
-    sync_volcanic_jobs = PythonOperator(
-        task_id="sync_volcanic_jobs_to_unified",
-        python_callable=sync_volcanic_jobs_to_unified,
+    scrape_volcanic_jobs = VolcanicSitemapToMongoOperator(
+        task_id="scrape_volcanic_jobs_to_unified",
+        sitemap_urls=VOLCANIC_SITEMAP_URLS,
+        mongo_conn_id=MONGO_CONN_ID,
+        mongo_db=MONGO_DB,
+        mongo_collection=MONGO_COLLECTION,
+        request_delay=0.5,
+        request_timeout=30,
     )
 
-    ensure_indexes >> sync_volcanic_jobs
-    scraping_done_tasks = [sync_volcanic_jobs]
-    scraping_task_ids = [sync_volcanic_jobs.task_id]
+    ensure_indexes >> scrape_volcanic_jobs
+    scraping_done_tasks = [scrape_volcanic_jobs]
+    scraping_task_ids = [scrape_volcanic_jobs.task_id]
 
     cleanup_stale_jobs = JobStaleCleanupOperator(
         task_id="cleanup_stale_jobs",
