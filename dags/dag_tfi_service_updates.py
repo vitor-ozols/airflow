@@ -680,7 +680,7 @@ with DAG(
     dag_id="tfi_daily_service_update_alerts",
     description="Monitora avisos do TFI com início hoje e envia alertas únicos em pt-BR.",
     start_date=pendulum.datetime(2026, 1, 1, tz=TIMEZONE),
-    schedule="0 * * * *",
+    schedule="0 6-20 * * *",
     catchup=False,
     max_active_tasks=1,
     max_active_runs=1,
