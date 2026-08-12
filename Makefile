@@ -1,6 +1,6 @@
-COMPOSE := docker compose
+COMPOSE := sudo docker compose
 AIRFLOW_SERVICES ?= airflow-api-server airflow-scheduler airflow-dag-processor
-SIMPLE_AUTH_PASSWORD_FILE ?= /opt/airflow/simple_auth_manager_passwords.json.generated
+SIMPLE_AUTH_PASSWORD_FILE ?= /opt/airflow/config/simple_auth_manager_passwords.json
 
 .PHONY: prepare init up down restart restart-airflow logs ps clean pass repair-layer repair-layer-prune reset-db
 

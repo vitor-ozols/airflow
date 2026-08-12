@@ -15,7 +15,7 @@ As dependências Python são gerenciadas com Poetry (`pyproject.toml`).
 make up
 ```
 
-Isso executa a inicialização do banco e cria o usuário admin:
+Isso executa a inicialização do banco e usa o usuário fixo do Simple Auth Manager:
 
 - Usuário: `admin`
 - Senha: veja com `make pass`

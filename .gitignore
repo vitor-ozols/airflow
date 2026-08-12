@@ -3,6 +3,7 @@
 *.db
 *.pid
 logs/
+config/simple_auth_manager_passwords.json
 
 tests.py
 
