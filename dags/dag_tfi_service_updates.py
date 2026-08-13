@@ -34,6 +34,7 @@ MONGO_COLLECTION = "tfi_service_update_notifications"
 
 GEMINI_BATCH_SIZE = 5
 GEMINI_DEFAULT_MODEL = "gemini-3.5-flash"
+MONITORED_BUS_ROUTES = ("101", "101X", "190", "188", "173")
 RETRYABLE_DISCOVERY_STATUSES = [
     "pending",
     "generating",
@@ -93,6 +94,33 @@ def _alert_hash(alert: dict) -> str:
         separators=(",", ":"),
     )
     return sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _monitored_routes_in_alert(alert: dict) -> list[str]:
+    """Return monitored route codes explicitly mentioned by an alert."""
+    service_text = " ".join(str(service) for service in alert.get("services") or [])
+    descriptive_text = " ".join(
+        str(alert.get(field) or "") for field in ("title", "description")
+    )
+    matches: list[str] = []
+    for route in MONITORED_BUS_ROUTES:
+        route_pattern = re.escape(route)
+        # The service badges normally contain the route number. The fallback
+        # handles prose such as "Route 101" without treating times, dates or a
+        # larger route number as one of the monitored routes.
+        in_services = re.search(
+            rf"(?<![A-Z0-9]){route_pattern}(?![A-Z0-9])",
+            service_text,
+            flags=re.IGNORECASE,
+        )
+        in_description = re.search(
+            rf"\b(?:route|routes|service|services|bus|line|linha)\s*(?:no\.?\s*)?#?\s*{route_pattern}(?![A-Z0-9])",
+            descriptive_text,
+            flags=re.IGNORECASE,
+        )
+        if in_services or in_description:
+            matches.append(route)
+    return matches
 
 
 def parse_service_updates(html_text: str, reference_date: date) -> list[dict]:
@@ -231,12 +259,16 @@ def fetch_todays_service_updates() -> list[str]:
 
     tfi_html = download_page(SOURCE_URL, "a página de atualizações do TFI")
     bus_eireann_html = download_page(BUS_EIREANN_SOURCE_URL, "a página de atualizações do Bus Éireann")
-    tfi_alerts = parse_service_updates(tfi_html, today)
-    bus_eireann_alerts = parse_bus_eireann_service_updates(bus_eireann_html, today)
+    all_tfi_alerts = parse_service_updates(tfi_html, today)
+    all_bus_eireann_alerts = parse_bus_eireann_service_updates(bus_eireann_html, today)
+    tfi_alerts = [alert for alert in all_tfi_alerts if _monitored_routes_in_alert(alert)]
+    bus_eireann_alerts = [
+        alert for alert in all_bus_eireann_alerts if _monitored_routes_in_alert(alert)
+    ]
     alerts = tfi_alerts + bus_eireann_alerts
-    if not tfi_alerts and "service-update-list" not in tfi_html:
+    if not all_tfi_alerts and "service-update-list" not in tfi_html:
         raise RuntimeError("A estrutura da página do TFI mudou: lista de atualizações não encontrada.")
-    if not bus_eireann_alerts and "Last Updated:" not in bus_eireann_html:
+    if not all_bus_eireann_alerts and "Last Updated:" not in bus_eireann_html:
         raise RuntimeError("A estrutura da página do Bus Éireann mudou: boletins não encontrados.")
 
     collection = _notification_collection()
@@ -293,10 +325,14 @@ def fetch_todays_service_updates() -> list[str]:
         )
     ]
     LOGGER.info(
-        "TFI: %s avisos com início em %s; Bus Éireann: %s boletins atualizados hoje; %s aguardando notificação.",
+        "Linhas monitoradas %s — TFI: %s de %s avisos com início em %s; "
+        "Bus Éireann: %s de %s boletins atualizados hoje; %s aguardando notificação.",
+        ", ".join(MONITORED_BUS_ROUTES),
         len(tfi_alerts),
+        len(all_tfi_alerts),
         today.isoformat(),
         len(bus_eireann_alerts),
+        len(all_bus_eireann_alerts),
         len(pending_hashes),
     )
     return pending_hashes
@@ -678,7 +714,7 @@ def send_notifications_and_record(alert_hashes: list[str]) -> dict:
 
 with DAG(
     dag_id="tfi_daily_service_update_alerts",
-    description="Monitora avisos do TFI com início hoje e envia alertas únicos em pt-BR.",
+    description="Monitora avisos das linhas 101, 101X, 190, 188 e 173 e envia alertas únicos em pt-BR.",
     start_date=pendulum.datetime(2026, 1, 1, tz=TIMEZONE),
     schedule="0 6-20 * * *",
     catchup=False,
